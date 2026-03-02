@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -24,6 +25,20 @@ class RhythmTrainerApp extends StatelessWidget {
   }
 }
 
+class RhythmPattern {
+  const RhythmPattern({
+    required this.name,
+    required this.steps,
+    required this.accentIndices,
+  });
+
+  final String name;
+  final int steps;
+  final Set<int> accentIndices;
+
+  bool isAccent(int index) => accentIndices.contains(index);
+}
+
 class RhythmTrainerPage extends StatefulWidget {
   const RhythmTrainerPage({super.key});
 
@@ -34,6 +49,22 @@ class RhythmTrainerPage extends StatefulWidget {
 class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
   final List<DateTime> _tapTimes = <DateTime>[];
   final List<double> _tapBpms = <double>[];
+
+  static const List<RhythmPattern> _patterns = <RhythmPattern>[
+    RhythmPattern(name: '4分音符 (4拍子)', steps: 4, accentIndices: <int>{0}),
+    RhythmPattern(name: '8ビート', steps: 8, accentIndices: <int>{0, 4}),
+    RhythmPattern(name: '3連符', steps: 3, accentIndices: <int>{0}),
+    RhythmPattern(name: '16ビート', steps: 16, accentIndices: <int>{0, 4, 8, 12}),
+    RhythmPattern(name: '3-3-2 clave', steps: 8, accentIndices: <int>{0, 3, 6}),
+  ];
+
+  int _selectedPatternIndex = 0;
+  int _configuredBpm = 120;
+  Timer? _metronomeTimer;
+  bool _isPlaying = false;
+  int _currentStep = -1;
+
+  RhythmPattern get _selectedPattern => _patterns[_selectedPatternIndex];
 
   void _registerTap() {
     SystemSound.play(SystemSoundType.click);
@@ -54,10 +85,58 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
   }
 
   void _reset() {
+    _stopPattern();
     setState(() {
       _tapTimes.clear();
       _tapBpms.clear();
+      _configuredBpm = 120;
+      _selectedPatternIndex = 0;
+      _currentStep = -1;
     });
+  }
+
+  void _startPattern() {
+    _metronomeTimer?.cancel();
+
+    final int intervalMs = (60000 / _configuredBpm).round();
+    setState(() {
+      _isPlaying = true;
+      _currentStep = -1;
+    });
+
+    _metronomeTimer = Timer.periodic(
+      Duration(milliseconds: intervalMs),
+      (Timer timer) {
+        setState(() {
+          _currentStep = (_currentStep + 1) % _selectedPattern.steps;
+        });
+
+        final bool isAccent = _selectedPattern.isAccent(_currentStep);
+        SystemSound.play(
+          isAccent ? SystemSoundType.click : SystemSoundType.alert,
+        );
+      },
+    );
+  }
+
+  void _stopPattern() {
+    _metronomeTimer?.cancel();
+    _metronomeTimer = null;
+
+    if (mounted) {
+      setState(() {
+        _isPlaying = false;
+        _currentStep = -1;
+      });
+    }
+  }
+
+  void _togglePlayback() {
+    if (_isPlaying) {
+      _stopPattern();
+    } else {
+      _startPattern();
+    }
   }
 
   double get _averageBpm {
@@ -92,6 +171,12 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
   }
 
   @override
+  void dispose() {
+    _metronomeTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final double avg = _averageBpm;
     final double stdDev = _deviationStdDev;
@@ -120,6 +205,103 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Text(
+                        'リズム再生設定',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<int>(
+                        initialValue: _selectedPatternIndex,
+                        decoration: const InputDecoration(
+                          labelText: 'リズムパターン',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: List<DropdownMenuItem<int>>.generate(
+                          _patterns.length,
+                          (int index) => DropdownMenuItem<int>(
+                            value: index,
+                            child: Text(_patterns[index].name),
+                          ),
+                        ),
+                        onChanged: _isPlaying
+                            ? null
+                            : (int? value) {
+                                if (value == null) {
+                                  return;
+                                }
+                                setState(() {
+                                  _selectedPatternIndex = value;
+                                  _currentStep = -1;
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 12),
+                      Text('BPM: $_configuredBpm'),
+                      Slider(
+                        value: _configuredBpm.toDouble(),
+                        min: 40,
+                        max: 240,
+                        divisions: 200,
+                        label: _configuredBpm.toString(),
+                        onChanged: _isPlaying
+                            ? null
+                            : (double value) {
+                                setState(() {
+                                  _configuredBpm = value.round();
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 8),
+                      FilledButton.icon(
+                        onPressed: _togglePlayback,
+                        icon: Icon(_isPlaying ? Icons.stop : Icons.play_arrow),
+                        label: Text(_isPlaying ? '停止' : '再生'),
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: List<Widget>.generate(
+                          _selectedPattern.steps,
+                          (int index) {
+                            final bool active = index == _currentStep;
+                            final bool accent = _selectedPattern.isAccent(index);
+
+                            return AnimatedContainer(
+                              duration: const Duration(milliseconds: 120),
+                              width: 28,
+                              height: 28,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: active
+                                    ? (accent ? Colors.deepPurple : Colors.teal)
+                                    : (accent
+                                        ? Colors.deepPurple.withOpacity(0.2)
+                                        : Colors.grey.withOpacity(0.2)),
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                '${index + 1}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: active ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
                         '平均BPM: ${avg.toStringAsFixed(1)}',
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
@@ -134,7 +316,7 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
               Expanded(
                 child: Center(
                   child: FilledButton.tonal(
