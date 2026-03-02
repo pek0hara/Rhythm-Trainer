@@ -73,7 +73,7 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
     final double mean = _averageBpm;
     final double variance =
         _tapBpms
-            .map((double bpm) => math.pow(bpm - mean, 2))
+            .map((double bpm) => (bpm - mean) * (bpm - mean))
             .reduce((double a, double b) => a + b) /
         _tapBpms.length;
 
