@@ -204,11 +204,6 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      Text(
-                        'リズム再生設定',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 12),
                       DropdownButtonFormField<int>(
                         initialValue: _selectedPatternIndex,
                         decoration: const InputDecoration(
@@ -298,19 +293,19 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
                     children: <Widget>[
-                      Text(
-                        '平均BPM: ${avg.toStringAsFixed(1)}',
-                        style: Theme.of(context).textTheme.titleLarge,
+                      _ScoreItem(
+                        label: '平均BPM',
+                        value: avg.toStringAsFixed(1),
                       ),
-                      const SizedBox(height: 8),
-                      Text('標準偏差: ${stdDev.toStringAsFixed(2)}'),
-                      const SizedBox(height: 8),
-                      Text(
-                        'スコア: ${score.toStringAsFixed(1)} / 100',
-                        style: Theme.of(context).textTheme.titleMedium,
+                      _ScoreItem(
+                        label: '標準偏差',
+                        value: stdDev.toStringAsFixed(2),
+                      ),
+                      _ScoreItem(
+                        label: 'スコア',
+                        value: '${score.toStringAsFixed(1)} / 100',
                       ),
                     ],
                   ),
@@ -371,6 +366,30 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ScoreItem extends StatelessWidget {
+  const _ScoreItem({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(label, style: Theme.of(context).textTheme.labelMedium),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+        ],
       ),
     );
   }
