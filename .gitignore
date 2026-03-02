@@ -1,0 +1,47 @@
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+pubspec.lock
+
+# Android
+android/
+!android/.gitkeep
+
+# iOS
+ios/
+!ios/.gitkeep
+
+# macOS
+macos/
+!macos/.gitkeep
+
+# Linux
+linux/
+!linux/.gitkeep
+
+# Windows
+windows/
+!windows/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+
+# Generated files
+*.g.dart
+*.freezed.dart
+
+# Test coverage
+coverage/
+
+# Logs
+*.log
