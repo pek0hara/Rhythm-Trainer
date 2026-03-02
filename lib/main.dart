@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() {
   runApp(const RhythmTrainerApp());
@@ -35,6 +36,8 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
   final List<double> _tapBpms = <double>[];
 
   void _registerTap() {
+    SystemSound.play(SystemSoundType.click);
+
     final DateTime now = DateTime.now();
 
     if (_tapTimes.isNotEmpty) {
