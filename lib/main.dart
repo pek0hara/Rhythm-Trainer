@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 void main() {
   runApp(const RhythmTrainerApp());
@@ -64,10 +65,98 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
   bool _isPlaying = false;
   int _currentStep = -1;
 
+  late final AudioPlayer _tapPlayer;
+  late final AudioPlayer _accentPlayer;
+  late final AudioPlayer _beatPlayer;
+
+  late final Uint8List _tapSoundBytes;
+  late final Uint8List _accentSoundBytes;
+  late final Uint8List _beatSoundBytes;
+
   RhythmPattern get _selectedPattern => _patterns[_selectedPatternIndex];
 
+  @override
+  void initState() {
+    super.initState();
+
+    _tapPlayer = AudioPlayer(playerId: 'tap-player');
+    _accentPlayer = AudioPlayer(playerId: 'accent-player');
+    _beatPlayer = AudioPlayer(playerId: 'beat-player');
+
+    _tapSoundBytes = _buildToneWav(
+      frequencyHz: 1000,
+      durationMs: 50,
+      volume: 0.5,
+    );
+    _accentSoundBytes = _buildToneWav(
+      frequencyHz: 1200,
+      durationMs: 80,
+      volume: 0.55,
+    );
+    _beatSoundBytes = _buildToneWav(
+      frequencyHz: 800,
+      durationMs: 60,
+      volume: 0.45,
+    );
+  }
+
+  Uint8List _buildToneWav({
+    required double frequencyHz,
+    required int durationMs,
+    required double volume,
+  }) {
+    const int sampleRate = 44100;
+    final int sampleCount = (sampleRate * durationMs / 1000).round();
+    final int dataSize = sampleCount * 2;
+
+    final ByteData bytes = ByteData(44 + dataSize);
+
+    void writeAscii(int offset, String value) {
+      for (int i = 0; i < value.length; i++) {
+        bytes.setUint8(offset + i, value.codeUnitAt(i));
+      }
+    }
+
+    writeAscii(0, 'RIFF');
+    bytes.setUint32(4, 36 + dataSize, Endian.little);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    bytes.setUint32(16, 16, Endian.little); // PCM chunk size
+    bytes.setUint16(20, 1, Endian.little); // PCM format
+    bytes.setUint16(22, 1, Endian.little); // mono channel
+    bytes.setUint32(24, sampleRate, Endian.little);
+    bytes.setUint32(28, sampleRate * 2, Endian.little); // byte rate
+    bytes.setUint16(32, 2, Endian.little); // block align
+    bytes.setUint16(34, 16, Endian.little); // bits per sample
+    writeAscii(36, 'data');
+    bytes.setUint32(40, dataSize, Endian.little);
+
+    for (int i = 0; i < sampleCount; i++) {
+      final double t = i / sampleRate;
+      final double envelope = (1 - (i / sampleCount)).clamp(0.0, 1.0);
+      final double sample =
+          math.sin(2 * math.pi * frequencyHz * t) * volume * envelope;
+      final int value = (sample * 32767).round().clamp(-32768, 32767);
+      bytes.setInt16(44 + i * 2, value, Endian.little);
+    }
+
+    return bytes.buffer.asUint8List();
+  }
+
+  Future<void> _playTapSound() async {
+    await _tapPlayer.stop();
+    await _tapPlayer.play(BytesSource(_tapSoundBytes));
+  }
+
+  Future<void> _playSampleSound({required bool isAccent}) async {
+    final AudioPlayer player = isAccent ? _accentPlayer : _beatPlayer;
+    final Uint8List soundBytes = isAccent ? _accentSoundBytes : _beatSoundBytes;
+    await player.stop();
+    await player.play(BytesSource(soundBytes));
+  }
+
   void _registerTap() {
-    SystemSound.play(SystemSoundType.click);
+    unawaited(_playTapSound());
 
     final DateTime now = DateTime.now();
 
@@ -112,9 +201,7 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
         });
 
         final bool isAccent = _selectedPattern.isAccent(_currentStep);
-        SystemSound.play(
-          isAccent ? SystemSoundType.click : SystemSoundType.alert,
-        );
+        unawaited(_playSampleSound(isAccent: isAccent));
       },
     );
   }
@@ -173,6 +260,9 @@ class _RhythmTrainerPageState extends State<RhythmTrainerPage> {
   @override
   void dispose() {
     _metronomeTimer?.cancel();
+    _tapPlayer.dispose();
+    _accentPlayer.dispose();
+    _beatPlayer.dispose();
     super.dispose();
   }
 
