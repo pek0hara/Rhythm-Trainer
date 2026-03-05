@@ -33,7 +33,8 @@ class MetronomePage extends StatefulWidget {
   State<MetronomePage> createState() => _MetronomePageState();
 }
 
-class _MetronomePageState extends State<MetronomePage> {
+class _MetronomePageState extends State<MetronomePage>
+    with SingleTickerProviderStateMixin {
   int _bpm = 120;
   bool _isPlaying = false;
   bool _isTicking = false;
@@ -41,17 +42,31 @@ class _MetronomePageState extends State<MetronomePage> {
   Timer? _timer;
   late final AudioPlayer _player;
   late final Uint8List _clickSound;
+  late final AnimationController _needleController;
+  late final Animation<double> _needleAngle;
 
   @override
   void initState() {
     super.initState();
     _player = AudioPlayer(playerId: 'metronome-player');
+    _needleController = AnimationController(
+      vsync: this,
+      duration: _beatDuration,
+    );
+    _needleAngle = Tween<double>(
+      begin: -math.pi / 4,
+      end: math.pi / 4,
+    ).animate(
+      CurvedAnimation(parent: _needleController, curve: Curves.easeInOut),
+    );
     _clickSound = _buildToneWav(
       frequencyHz: 1000,
       durationMs: 40,
       volume: 0.5,
     );
   }
+
+  Duration get _beatDuration => Duration(milliseconds: (60000 / _bpm).round());
 
   Uint8List _buildToneWav({
     required double frequencyHz,
@@ -116,15 +131,18 @@ class _MetronomePageState extends State<MetronomePage> {
 
   void _start() {
     _timer?.cancel();
-
-    final int intervalMs = (60000 / _bpm).round();
+    final Duration beatDuration = _beatDuration;
 
     setState(() {
       _isPlaying = true;
     });
 
+    _needleController
+      ..duration = beatDuration
+      ..repeat(reverse: true);
+
     unawaited(_tick());
-    _timer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
+    _timer = Timer.periodic(beatDuration, (_) {
       unawaited(_tick());
     });
   }
@@ -136,6 +154,9 @@ class _MetronomePageState extends State<MetronomePage> {
       _isPlaying = false;
       _isTicking = false;
     });
+    _needleController
+      ..stop()
+      ..reset();
   }
 
   void _togglePlay() {
@@ -149,6 +170,7 @@ class _MetronomePageState extends State<MetronomePage> {
   @override
   void dispose() {
     _timer?.cancel();
+    _needleController.dispose();
     _player.dispose();
     super.dispose();
   }
@@ -182,15 +204,53 @@ class _MetronomePageState extends State<MetronomePage> {
                       },
               ),
               const SizedBox(height: 24),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 80),
-                width: 120,
-                height: 120,
-                decoration: BoxDecoration(
-                  color: _isTicking
-                      ? Theme.of(context).colorScheme.primary
-                      : Theme.of(context).colorScheme.primaryContainer,
-                  shape: BoxShape.circle,
+              SizedBox(
+                width: 220,
+                height: 220,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: <Widget>[
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 80),
+                      width: 120,
+                      height: 120,
+                      decoration: BoxDecoration(
+                        color: _isTicking
+                            ? Theme.of(context).colorScheme.primary
+                            : Theme.of(context).colorScheme.primaryContainer,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    AnimatedBuilder(
+                      animation: _needleAngle,
+                      builder: (BuildContext context, Widget? child) {
+                        return Transform.rotate(
+                          angle: _needleAngle.value,
+                          alignment: Alignment.bottomCenter,
+                          child: child,
+                        );
+                      },
+                      child: Align(
+                        alignment: Alignment.topCenter,
+                        child: Container(
+                          width: 8,
+                          height: 120,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.secondary,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Container(
+                      width: 16,
+                      height: 16,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 24),
