@@ -41,6 +41,7 @@ class _MetronomePageState extends State<MetronomePage> {
   Timer? _timer;
   late final AudioPlayer _player;
   late final Uint8List _clickSound;
+  bool _hasAudioError = false;
 
   @override
   void initState() {
@@ -101,8 +102,21 @@ class _MetronomePageState extends State<MetronomePage> {
       _isTicking = true;
     });
 
-    await _player.stop();
-    await _player.play(BytesSource(_clickSound));
+    try {
+      await _player.stop();
+      await _player.play(BytesSource(_clickSound));
+      _hasAudioError = false;
+    } catch (error) {
+      debugPrint('Failed to play metronome tick: $error');
+      if (!_hasAudioError && mounted) {
+        _hasAudioError = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('音声の再生に失敗しました。')),
+        );
+      }
+      _stop();
+      return;
+    }
 
     Future<void>.delayed(const Duration(milliseconds: 100), () {
       if (!mounted) {
@@ -114,7 +128,7 @@ class _MetronomePageState extends State<MetronomePage> {
     });
   }
 
-  void _start() {
+  Future<void> _start() async {
     _timer?.cancel();
 
     final int intervalMs = (60000 / _bpm).round();
@@ -123,7 +137,10 @@ class _MetronomePageState extends State<MetronomePage> {
       _isPlaying = true;
     });
 
-    unawaited(_tick());
+    await _tick();
+    if (!_isPlaying) {
+      return;
+    }
     _timer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
       unawaited(_tick());
     });
@@ -138,11 +155,11 @@ class _MetronomePageState extends State<MetronomePage> {
     });
   }
 
-  void _togglePlay() {
+  Future<void> _togglePlay() async {
     if (_isPlaying) {
       _stop();
     } else {
-      _start();
+      await _start();
     }
   }
 
@@ -195,7 +212,9 @@ class _MetronomePageState extends State<MetronomePage> {
               ),
               const SizedBox(height: 24),
               FilledButton.icon(
-                onPressed: _togglePlay,
+                onPressed: () {
+                  unawaited(_togglePlay());
+                },
                 icon: Icon(_isPlaying ? Icons.stop : Icons.play_arrow),
                 label: Text(_isPlaying ? '停止' : '再生'),
               ),
