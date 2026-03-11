@@ -42,6 +42,7 @@ class _MetronomePageState extends State<MetronomePage>
   Timer? _timer;
   late final AudioPlayer _player;
   late final Uint8List _clickSound;
+  late final BytesSource _clickSource;
   late final AnimationController _needleController;
   late final Animation<double> _needleAngle;
 
@@ -64,6 +65,7 @@ class _MetronomePageState extends State<MetronomePage>
       durationMs: 40,
       volume: 0.5,
     );
+    _clickSource = BytesSource(_clickSound, mimeType: 'audio/wav');
   }
 
   Duration get _beatDuration => Duration(milliseconds: (60000 / _bpm).round());
@@ -117,7 +119,7 @@ class _MetronomePageState extends State<MetronomePage>
     });
 
     await _player.stop();
-    await _player.play(BytesSource(_clickSound));
+    await _player.play(_clickSource);
 
     Future<void>.delayed(const Duration(milliseconds: 100), () {
       if (!mounted) {
