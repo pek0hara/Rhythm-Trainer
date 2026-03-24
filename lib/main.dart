@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   runApp(const MetronomeApp());
@@ -42,7 +44,7 @@ class _MetronomePageState extends State<MetronomePage>
   Timer? _timer;
   late final AudioPlayer _player;
   late final Uint8List _clickSound;
-  late final BytesSource _clickSource;
+  DeviceFileSource? _clickSource;
   late final AnimationController _needleController;
   late final Animation<double> _needleAngle;
 
@@ -65,7 +67,14 @@ class _MetronomePageState extends State<MetronomePage>
       durationMs: 40,
       volume: 0.5,
     );
-    _clickSource = BytesSource(_clickSound, mimeType: 'audio/wav');
+    _initClickSource();
+  }
+
+  Future<void> _initClickSource() async {
+    final Directory tmpDir = await getTemporaryDirectory();
+    final File wavFile = File('${tmpDir.path}/click.wav');
+    await wavFile.writeAsBytes(_clickSound);
+    _clickSource = DeviceFileSource(wavFile.path);
   }
 
   Duration get _beatDuration => Duration(milliseconds: (60000 / _bpm).round());
@@ -118,8 +127,9 @@ class _MetronomePageState extends State<MetronomePage>
       _isTicking = true;
     });
 
+    if (_clickSource == null) return;
     await _player.stop();
-    await _player.play(_clickSource);
+    await _player.play(_clickSource!);
 
     Future<void>.delayed(const Duration(milliseconds: 100), () {
       if (!mounted) {
