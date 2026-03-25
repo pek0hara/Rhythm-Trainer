@@ -1,11 +1,9 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter/services.dart';
 
 void main() {
   runApp(const MetronomeApp());
@@ -36,25 +34,42 @@ class MetronomePage extends StatefulWidget {
 }
 
 class _MetronomePageState extends State<MetronomePage>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
+  static const MethodChannel _methodChannel =
+      MethodChannel('com.rhythmtrainer.metronome/control');
+  static const EventChannel _eventChannel =
+      EventChannel('com.rhythmtrainer.metronome/beats');
+
   int _bpm = 120;
   bool _isPlaying = false;
-  bool _isTicking = false;
+  bool _isReady = false;
+  final TextEditingController _bpmTextController =
+      TextEditingController(text: '120');
 
-  Timer? _timer;
-  late final AudioPlayer _player;
-  late final Uint8List _clickSound;
-  DeviceFileSource? _clickSource;
+  StreamSubscription<dynamic>? _beatSubscription;
+
   late final AnimationController _needleController;
   late final Animation<double> _needleAngle;
+  AnimationController? _flashController;
+
+  static const int _warmupMeasurements = 2;
+
+  int _tapCount = 0;
+  DateTime? _lastTapTime;
+  final ValueNotifier<({bool isWarmingUp, double? deviation})> _deviationState =
+      ValueNotifier((isWarmingUp: false, deviation: null));
+  final List<double> _tapDeviationLog = [];
 
   @override
   void initState() {
     super.initState();
-    _player = AudioPlayer(playerId: 'metronome-player');
     _needleController = AnimationController(
       vsync: this,
       duration: _beatDuration,
+    );
+    _flashController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 100),
     );
     _needleAngle = Tween<double>(
       begin: -math.pi / 4,
@@ -62,22 +77,24 @@ class _MetronomePageState extends State<MetronomePage>
     ).animate(
       CurvedAnimation(parent: _needleController, curve: Curves.easeInOut),
     );
-    _clickSound = _buildToneWav(
+    _initClickSound();
+  }
+
+  Future<void> _initClickSound() async {
+    final Uint8List wav = _buildToneWav(
       frequencyHz: 1000,
       durationMs: 40,
       volume: 0.5,
     );
-    _initClickSource();
+    await _methodChannel.invokeMethod<void>(
+      'prepare',
+      Uint8List.fromList(wav),
+    );
+    if (mounted) setState(() => _isReady = true);
   }
 
-  Future<void> _initClickSource() async {
-    final Directory tmpDir = await getTemporaryDirectory();
-    final File wavFile = File('${tmpDir.path}/click.wav');
-    await wavFile.writeAsBytes(_clickSound);
-    _clickSource = DeviceFileSource(wavFile.path);
-  }
-
-  Duration get _beatDuration => Duration(milliseconds: (60000 / _bpm).round());
+  Duration get _beatDuration =>
+      Duration(milliseconds: (60000 / _bpm).round());
 
   Uint8List _buildToneWav({
     required double frequencyHz,
@@ -87,7 +104,6 @@ class _MetronomePageState extends State<MetronomePage>
     const int sampleRate = 44100;
     final int sampleCount = (sampleRate * durationMs / 1000).round();
     final int dataSize = sampleCount * 2;
-
     final ByteData bytes = ByteData(44 + dataSize);
 
     void writeAscii(int offset, String value) {
@@ -122,53 +138,87 @@ class _MetronomePageState extends State<MetronomePage>
     return bytes.buffer.asUint8List();
   }
 
-  Future<void> _tick() async {
-    setState(() {
-      _isTicking = true;
-    });
+  Future<void> _startNative() async {
+    await _methodChannel.invokeMethod<void>('start', _bpm.toDouble());
+  }
 
-    if (_clickSource == null) return;
-    await _player.stop();
-    await _player.play(_clickSource!);
+  Future<void> _stopNative() async {
+    await _methodChannel.invokeMethod<void>('stop');
+  }
 
-    Future<void>.delayed(const Duration(milliseconds: 100), () {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isTicking = false;
-      });
-    });
+  void _restartMetronome() {
+    _needleController
+      ..duration = _beatDuration
+      ..value = 0.5
+      ..repeat(reverse: true);
+    unawaited(_stopNative().then((_) => _startNative()));
   }
 
   void _start() {
-    _timer?.cancel();
-    final Duration beatDuration = _beatDuration;
-
+    _deviationState.value = (isWarmingUp: false, deviation: null);
     setState(() {
       _isPlaying = true;
+      _tapCount = 0;
+      _lastTapTime = null;
+      _tapDeviationLog.clear();
     });
 
     _needleController
-      ..duration = beatDuration
+      ..duration = _beatDuration
+      ..value = 0.5
       ..repeat(reverse: true);
 
-    unawaited(_tick());
-    _timer = Timer.periodic(beatDuration, (_) {
-      unawaited(_tick());
+    unawaited(_startNative());
+
+    _beatSubscription = _eventChannel.receiveBroadcastStream().listen((_) {
+      _flashController?.forward(from: 0);
     });
   }
 
   void _stop() {
-    _timer?.cancel();
-    _timer = null;
-    setState(() {
-      _isPlaying = false;
-      _isTicking = false;
-    });
+    _beatSubscription?.cancel();
+    _beatSubscription = null;
+    unawaited(_stopNative());
+    setState(() => _isPlaying = false);
+    _flashController?.stop();
     _needleController
       ..stop()
       ..reset();
+  }
+
+  void _onCircleTap() {
+    if (!_isPlaying) return;
+    final DateTime now = DateTime.now();
+
+    if (_tapCount == 0) {
+      // 初回タップ: メトロノーム同期 + 基準時刻記録 + 即座に測定中表示
+      _restartMetronome();
+      _lastTapTime = now;
+      _deviationState.value = (isWarmingUp: true, deviation: null);
+    } else if (_lastTapTime != null) {
+      final int intervalMs = now.difference(_lastTapTime!).inMilliseconds;
+      if (intervalMs > 100) {
+        final double tappedBpm = 60000.0 / intervalMs;
+        final double deviation = tappedBpm - _bpm;
+        // _tapCount==1 が1回目の測定。_tapCount-1 が0始まりの測定インデックス。
+        final int measurementIndex = _tapCount - 1;
+        if (measurementIndex >= _warmupMeasurements) {
+          _tapDeviationLog.add(deviation);
+          _deviationState.value = (isWarmingUp: false, deviation: deviation);
+        }
+      }
+      _lastTapTime = now;
+    }
+    _tapCount++;
+  }
+
+  void _applyBpmInput() {
+    final int? parsed = int.tryParse(_bpmTextController.text);
+    if (parsed != null && parsed >= 40 && parsed <= 240) {
+      setState(() => _bpm = parsed);
+    } else {
+      _bpmTextController.text = _bpm.toString();
+    }
   }
 
   void _togglePlay() {
@@ -181,9 +231,11 @@ class _MetronomePageState extends State<MetronomePage>
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _beatSubscription?.cancel();
     _needleController.dispose();
-    _player.dispose();
+    _flashController?.dispose();
+    _bpmTextController.dispose();
+    _deviationState.dispose();
     super.dispose();
   }
 
@@ -192,87 +244,222 @@ class _MetronomePageState extends State<MetronomePage>
     return Scaffold(
       appBar: AppBar(title: const Text('Metronome')),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            children: <Widget>[
-              const Spacer(),
-              Text(
-                '$_bpm BPM',
-                style: Theme.of(context).textTheme.headlineMedium,
-              ),
-              Slider(
-                value: _bpm.toDouble(),
-                min: 40,
-                max: 240,
-                divisions: 200,
-                label: _bpm.toString(),
-                onChanged: _isPlaying
-                    ? null
-                    : (double value) {
-                        setState(() {
-                          _bpm = value.round();
-                        });
-                      },
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: 220,
-                height: 220,
-                child: Stack(
-                  alignment: Alignment.center,
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: <Widget>[
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 80),
-                      width: 120,
-                      height: 120,
-                      decoration: BoxDecoration(
-                        color: _isTicking
-                            ? Theme.of(context).colorScheme.primary
-                            : Theme.of(context).colorScheme.primaryContainer,
-                        shape: BoxShape.circle,
+                    SizedBox(
+                      width: 100,
+                      child: TextField(
+                        controller: _bpmTextController,
+                        enabled: !_isPlaying,
+                        keyboardType: TextInputType.number,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineMedium,
+                        decoration: const InputDecoration(
+                            border: OutlineInputBorder()),
+                        onSubmitted: (_) {
+                          _applyBpmInput();
+                          FocusScope.of(context).unfocus();
+                        },
+                        onTapOutside: (_) {
+                          _applyBpmInput();
+                          FocusScope.of(context).unfocus();
+                        },
                       ),
                     ),
-                    AnimatedBuilder(
-                      animation: _needleAngle,
-                      builder: (BuildContext context, Widget? child) {
-                        return Transform.rotate(
-                          angle: _needleAngle.value,
-                          alignment: Alignment.bottomCenter,
-                          child: child,
-                        );
-                      },
-                      child: Align(
-                        alignment: Alignment.topCenter,
+                    const SizedBox(width: 8),
+                    Text('BPM',
+                        style: Theme.of(context).textTheme.headlineMedium),
+                  ],
+                ),
+                Slider(
+                  value: _bpm.toDouble(),
+                  min: 40,
+                  max: 240,
+                  divisions: 200,
+                  label: _bpm.toString(),
+                  onChanged: _isPlaying
+                      ? null
+                      : (double value) {
+                          setState(() {
+                            _bpm = value.round();
+                            _bpmTextController.text = _bpm.toString();
+                          });
+                        },
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: 220,
+                  height: 220,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    alignment: Alignment.center,
+                    children: <Widget>[
+                      Listener(
+                        onPointerDown: (_) => _onCircleTap(),
+                        behavior: HitTestBehavior.opaque,
                         child: Container(
-                          width: 8,
-                          height: 120,
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.secondary,
-                            borderRadius: BorderRadius.circular(999),
+                          width: 168,
+                          height: 168,
+                          color: Colors.transparent,
+                          child: Center(
+                            child: AnimatedBuilder(
+                              animation: _flashController ?? _needleController,
+                              builder: (BuildContext context, Widget? _) {
+                                final Color color = Color.lerp(
+                                  Theme.of(context).colorScheme.primaryContainer,
+                                  Theme.of(context).colorScheme.primary,
+                                  _flashController?.value ?? 0.0,
+                                )!;
+                                return Container(
+                                  width: 120,
+                                  height: 120,
+                                  decoration: BoxDecoration(
+                                    color: color,
+                                    shape: BoxShape.circle,
+                                  ),
+                                );
+                              },
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    Container(
-                      width: 16,
-                      height: 16,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
-                        shape: BoxShape.circle,
+                      IgnorePointer(
+                        child: AnimatedBuilder(
+                          animation: _needleAngle,
+                          builder: (BuildContext context, Widget? child) {
+                            return Transform.rotate(
+                              angle: _needleAngle.value,
+                              alignment: Alignment.bottomCenter,
+                              child: child,
+                            );
+                          },
+                          child: Align(
+                            alignment: Alignment.topCenter,
+                            child: OverflowBox(
+                              alignment: Alignment.topCenter,
+                              minHeight: 0,
+                              maxHeight: double.infinity,
+                              child: Transform.translate(
+                                offset: const Offset(0, -250),
+                                child: Container(
+                                  width: 8,
+                                  height: 450,
+                                  decoration: BoxDecoration(
+                                    color:
+                                        Theme.of(context).colorScheme.secondary,
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      IgnorePointer(
+                        child: Container(
+                          width: 16,
+                          height: 16,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onPrimaryContainer,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: _isReady ? _togglePlay : null,
+                  icon: Icon(
+                      _isPlaying ? Icons.stop : Icons.play_arrow,
+                      size: 32),
+                  label: Text(
+                    _isPlaying ? '停止' : '再生',
+                    style: const TextStyle(fontSize: 20),
+                  ),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 32, vertical: 16),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ValueListenableBuilder(
+                  valueListenable: _deviationState,
+                  builder: (BuildContext context,
+                      ({bool isWarmingUp, double? deviation}) state, _) {
+                    if (!_isPlaying) return const SizedBox.shrink();
+                    if (state.isWarmingUp) {
+                      return Text(
+                        'リズム測定中...',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              color: Colors.grey,
+                            ),
+                      );
+                    }
+                    final double? d = state.deviation;
+                    if (d == null) return const SizedBox.shrink();
+                    return Text(
+                      'ズレ: ${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            color: d.abs() < 2
+                                ? Colors.green
+                                : d.abs() < 5
+                                    ? Colors.orange
+                                    : Colors.red,
+                          ),
+                    );
+                  },
+                ),
+                if (!_isPlaying && _tapDeviationLog.isNotEmpty)
+                  TextButton.icon(
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: const Text('タップログ'),
+                        content: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: List<Widget>.generate(
+                                _tapDeviationLog.length, (int i) {
+                              final double d = _tapDeviationLog[i];
+                              return Text(
+                                '#${i + 1}:  ${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
+                                style: TextStyle(
+                                  color: d.abs() < 2
+                                      ? Colors.green
+                                      : d.abs() < 5
+                                          ? Colors.orange
+                                          : Colors.red,
+                                ),
+                              );
+                            }),
+                          ),
+                        ),
+                        actions: <Widget>[
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('閉じる'),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: _togglePlay,
-                icon: Icon(_isPlaying ? Icons.stop : Icons.play_arrow),
-                label: Text(_isPlaying ? '停止' : '再生'),
-              ),
-              const Spacer(),
-            ],
+                    icon: const Icon(Icons.list_alt),
+                    label: const Text('ログを見る'),
+                  ),
+                const SizedBox(height: 24),
+              ],
+            ),
           ),
         ),
       ),
