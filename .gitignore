@@ -13,8 +13,11 @@ android/
 !android/.gitkeep
 
 # iOS
-ios/
+ios/*
 !ios/.gitkeep
+!ios/Runner/
+ios/Runner/*
+!ios/Runner/MetronomeChannel.swift
 
 # macOS
 macos/
