@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -81,6 +82,10 @@ class _MetronomePageState extends State<MetronomePage>
   }
 
   Future<void> _initClickSound() async {
+    if (kIsWeb) {
+      if (mounted) setState(() => _isReady = true);
+      return;
+    }
     final Uint8List wav = _buildToneWav(
       frequencyHz: 1000,
       durationMs: 40,
