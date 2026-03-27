@@ -258,21 +258,6 @@ class _MetronomePageState extends State<MetronomePage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Metronome'),
-        actions: <Widget>[
-          IconButton(
-            icon: Icon(_showNeedle ? Icons.straighten : Icons.straighten_outlined),
-            tooltip: _showNeedle ? '針を非表示' : '針を表示',
-            onPressed: () => setState(() => _showNeedle = !_showNeedle),
-          ),
-          IconButton(
-            icon: Icon(_soundEnabled ? Icons.volume_up : Icons.volume_off),
-            tooltip: _soundEnabled ? '音声オフ' : '音声オン',
-            onPressed: _isReady ? _toggleSound : null,
-          ),
-        ],
-      ),
       body: SafeArea(
         child: SingleChildScrollView(
           child: Padding(
@@ -280,6 +265,26 @@ class _MetronomePageState extends State<MetronomePage>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    const Expanded(
+                      child: Text(
+                        'Metronome',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(_showNeedle ? Icons.straighten : Icons.straighten_outlined),
+                      tooltip: _showNeedle ? '針を非表示' : '針を表示',
+                      onPressed: () => setState(() => _showNeedle = !_showNeedle),
+                    ),
+                    IconButton(
+                      icon: Icon(_soundEnabled ? Icons.volume_up : Icons.volume_off),
+                      tooltip: _soundEnabled ? '音声オフ' : '音声オン',
+                      onPressed: _isReady ? _toggleSound : null,
+                    ),
+                  ],
+                ),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: <Widget>[
