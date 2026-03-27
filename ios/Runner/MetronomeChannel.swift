@@ -12,6 +12,7 @@ class MetronomeChannel {
     private var dispatchTimer: DispatchSourceTimer?
     private let timerQueue = DispatchQueue(label: "com.rhythmtrainer.metronome", qos: .userInteractive)
     private let audioSetupQueue = DispatchQueue(label: "com.rhythmtrainer.setup", qos: .userInitiated)
+    private var isMuted = false
 
     init(messenger: FlutterBinaryMessenger) {
         methodChannel = FlutterMethodChannel(name: "com.rhythmtrainer.metronome/control", binaryMessenger: messenger)
@@ -56,6 +57,9 @@ class MetronomeChannel {
         case "stop":
             stop()
             result(nil)
+        case "setMuted":
+            isMuted = call.arguments as? Bool ?? false
+            result(nil)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -87,7 +91,7 @@ class MetronomeChannel {
     }
 
     private func playClick() {
-        guard let buffer = clickBuffer else { return }
+        guard !isMuted, let buffer = clickBuffer else { return }
         if !engine.isRunning { try? engine.start() }
         playerNode.scheduleBuffer(buffer)
         if !playerNode.isPlaying { playerNode.play() }

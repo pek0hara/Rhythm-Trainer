@@ -41,11 +41,14 @@ class _MetronomePageState extends State<MetronomePage>
   static const EventChannel _eventChannel =
       EventChannel('com.rhythmtrainer.metronome/beats');
 
-  int _bpm = 120;
+  int _bpm = 100;
   bool _isPlaying = false;
   bool _isReady = false;
+  bool _showNeedle = true;
+  bool _soundEnabled = true;
+
   final TextEditingController _bpmTextController =
-      TextEditingController(text: '120');
+      TextEditingController(text: '100');
 
   StreamSubscription<dynamic>? _beatSubscription;
 
@@ -53,7 +56,7 @@ class _MetronomePageState extends State<MetronomePage>
   late final Animation<double> _needleAngle;
   AnimationController? _flashController;
 
-  static const int _warmupMeasurements = 2;
+  static const int _warmupMeasurements = 0;
 
   int _tapCount = 0;
   DateTime? _lastTapTime;
@@ -234,6 +237,14 @@ class _MetronomePageState extends State<MetronomePage>
     }
   }
 
+  Future<void> _toggleSound() async {
+    final bool next = !_soundEnabled;
+    setState(() => _soundEnabled = next);
+    if (!kIsWeb) {
+      await _methodChannel.invokeMethod<void>('setMuted', !next);
+    }
+  }
+
   @override
   void dispose() {
     _beatSubscription?.cancel();
@@ -247,7 +258,21 @@ class _MetronomePageState extends State<MetronomePage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Metronome')),
+      appBar: AppBar(
+        title: const Text('Metronome'),
+        actions: <Widget>[
+          IconButton(
+            icon: Icon(_showNeedle ? Icons.straighten : Icons.straighten_outlined),
+            tooltip: _showNeedle ? '針を非表示' : '針を表示',
+            onPressed: () => setState(() => _showNeedle = !_showNeedle),
+          ),
+          IconButton(
+            icon: Icon(_soundEnabled ? Icons.volume_up : Icons.volume_off),
+            tooltip: _soundEnabled ? '音声オフ' : '音声オン',
+            onPressed: _isReady ? _toggleSound : null,
+          ),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           child: Padding(
@@ -335,38 +360,38 @@ class _MetronomePageState extends State<MetronomePage>
                           ),
                         ),
                       ),
-                      IgnorePointer(
-                        child: AnimatedBuilder(
-                          animation: _needleAngle,
-                          builder: (BuildContext context, Widget? child) {
-                            return Transform.rotate(
-                              angle: _needleAngle.value,
-                              alignment: Alignment.bottomCenter,
-                              child: child,
-                            );
-                          },
-                          child: Align(
-                            alignment: Alignment.topCenter,
-                            child: OverflowBox(
+                      if (_showNeedle)
+                        IgnorePointer(
+                          child: AnimatedBuilder(
+                            animation: _needleAngle,
+                            builder: (BuildContext context, Widget? child) {
+                              return Transform.rotate(
+                                angle: _needleAngle.value,
+                                alignment: Alignment.bottomCenter,
+                                child: child,
+                              );
+                            },
+                            child: Align(
                               alignment: Alignment.topCenter,
-                              minHeight: 0,
-                              maxHeight: double.infinity,
-                              child: Transform.translate(
-                                offset: const Offset(0, -250),
-                                child: Container(
-                                  width: 8,
-                                  height: 450,
-                                  decoration: BoxDecoration(
-                                    color:
-                                        Theme.of(context).colorScheme.secondary,
-                                    borderRadius: BorderRadius.circular(999),
+                              child: OverflowBox(
+                                alignment: Alignment.topCenter,
+                                minHeight: 0,
+                                maxHeight: double.infinity,
+                                child: Transform.translate(
+                                  offset: const Offset(0, -250),
+                                  child: Container(
+                                    width: 8,
+                                    height: 450,
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context).colorScheme.secondary,
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ),
                       IgnorePointer(
                         child: Container(
                           width: 16,
@@ -414,7 +439,7 @@ class _MetronomePageState extends State<MetronomePage>
                     final double? d = state.deviation;
                     if (d == null) return const SizedBox.shrink();
                     return Text(
-                      'ズレ: ${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
+                      '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                             color: d.abs() < 2
                                 ? Colors.green
@@ -435,20 +460,40 @@ class _MetronomePageState extends State<MetronomePage>
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.start,
-                            children: List<Widget>.generate(
-                                _tapDeviationLog.length, (int i) {
-                              final double d = _tapDeviationLog[i];
-                              return Text(
-                                '#${i + 1}:  ${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
-                                style: TextStyle(
-                                  color: d.abs() < 2
-                                      ? Colors.green
-                                      : d.abs() < 5
-                                          ? Colors.orange
-                                          : Colors.red,
-                                ),
-                              );
-                            }),
+                            children: <Widget>[
+                              Builder(builder: (_) {
+                                final int total = _tapDeviationLog.length;
+                                final int green = _tapDeviationLog.where((double d) => d.abs() < 2).length;
+                                final int orange = _tapDeviationLog.where((double d) => d.abs() >= 2 && d.abs() < 5).length;
+                                final int red = total - green - orange;
+                                String pct(int n) => '${(n / total * 100).round()}%';
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                    children: <Widget>[
+                                      Text('🟢 $green (${pct(green)})', style: const TextStyle(color: Colors.green)),
+                                      Text('🟡 $orange (${pct(orange)})', style: const TextStyle(color: Colors.orange)),
+                                      Text('🔴 $red (${pct(red)})', style: const TextStyle(color: Colors.red)),
+                                    ],
+                                  ),
+                                );
+                              }),
+                              ...List<Widget>.generate(
+                                  _tapDeviationLog.length, (int i) {
+                                final double d = _tapDeviationLog[i];
+                                return Text(
+                                  '#${i + 1}:  ${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
+                                  style: TextStyle(
+                                    color: d.abs() < 2
+                                        ? Colors.green
+                                        : d.abs() < 5
+                                            ? Colors.orange
+                                            : Colors.red,
+                                  ),
+                                );
+                              }),
+                            ],
                           ),
                         ),
                         actions: <Widget>[
