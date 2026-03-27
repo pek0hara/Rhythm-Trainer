@@ -11,6 +11,18 @@ pubspec.lock
 # Android
 android/
 !android/.gitkeep
+!android/app/
+android/app/*
+!android/app/src/
+android/app/src/*
+!android/app/src/main/
+android/app/src/main/*
+!android/app/src/main/kotlin/
+android/app/src/main/kotlin/**
+!android/app/src/main/kotlin/com/
+!android/app/src/main/kotlin/com/example/
+!android/app/src/main/kotlin/com/example/rhythm_trainer/
+!android/app/src/main/kotlin/com/example/rhythm_trainer/MainActivity.kt
 
 # iOS
 ios/*
