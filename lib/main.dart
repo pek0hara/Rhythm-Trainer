@@ -55,6 +55,8 @@ class _MetronomePageState extends State<MetronomePage>
   late final AnimationController _needleController;
   late final Animation<double> _needleAngle;
   AnimationController? _flashController;
+  late final AnimationController _rippleDriverController;
+  final List<DateTime> _rippleStartTimes = [];
 
   static const int _warmupMeasurements = 0;
 
@@ -75,6 +77,10 @@ class _MetronomePageState extends State<MetronomePage>
       vsync: this,
       duration: const Duration(milliseconds: 100),
     );
+    _rippleDriverController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat();
     _needleAngle = Tween<double>(
       begin: -math.pi / 4,
       end: math.pi / 4,
@@ -180,6 +186,7 @@ class _MetronomePageState extends State<MetronomePage>
 
     _beatSubscription = _eventChannel.receiveBroadcastStream().listen((_) {
       _flashController?.forward(from: 0);
+      _rippleStartTimes.add(DateTime.now());
     });
   }
 
@@ -189,6 +196,7 @@ class _MetronomePageState extends State<MetronomePage>
     unawaited(_stopNative());
     setState(() => _isPlaying = false);
     _flashController?.stop();
+    _rippleStartTimes.clear();
     _needleController
       ..stop()
       ..reset();
@@ -250,6 +258,7 @@ class _MetronomePageState extends State<MetronomePage>
     _beatSubscription?.cancel();
     _needleController.dispose();
     _flashController?.dispose();
+    _rippleDriverController.dispose();
     _bpmTextController.dispose();
     _deviationState.dispose();
     super.dispose();
@@ -336,6 +345,26 @@ class _MetronomePageState extends State<MetronomePage>
                     clipBehavior: Clip.none,
                     alignment: Alignment.center,
                     children: <Widget>[
+                      IgnorePointer(
+                        child: AnimatedBuilder(
+                          animation: _rippleDriverController,
+                          builder: (BuildContext context, Widget? _) {
+                            _rippleStartTimes.removeWhere(
+                              (DateTime t) =>
+                                  DateTime.now().difference(t) > _beatDuration * 2,
+                            );
+                            return CustomPaint(
+                              size: const Size(220, 220),
+                              painter: _RipplePainter(
+                                startTimes: List<DateTime>.from(_rippleStartTimes),
+                                rippleDuration: _beatDuration,
+                                color: Theme.of(context).colorScheme.primary,
+                                maxRadius: 110,
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                       Listener(
                         onPointerDown: (_) => _onCircleTap(),
                         behavior: HitTestBehavior.opaque,
@@ -520,4 +549,44 @@ class _MetronomePageState extends State<MetronomePage>
       ),
     );
   }
+}
+
+class _RipplePainter extends CustomPainter {
+  _RipplePainter({
+    required this.startTimes,
+    required this.rippleDuration,
+    required this.color,
+    required this.maxRadius,
+  });
+
+  final List<DateTime> startTimes;
+  final Duration rippleDuration;
+  final Color color;
+  final double maxRadius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final DateTime now = DateTime.now();
+    final Offset center = Offset(size.width / 2, size.height / 2);
+    final int durationMs = rippleDuration.inMilliseconds;
+
+    for (final DateTime start in startTimes) {
+      final int elapsedMs = now.difference(start).inMilliseconds;
+      if (elapsedMs > durationMs) continue;
+      final double progress = elapsedMs / durationMs;
+      final double radius = progress * maxRadius;
+      final double opacity = (1.0 - progress) * 0.55;
+      canvas.drawCircle(
+        center,
+        radius,
+        Paint()
+          ..color = color.withValues(alpha: opacity)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.0,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RipplePainter oldDelegate) => true;
 }
