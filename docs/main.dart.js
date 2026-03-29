@@ -76523,7 +76523,7 @@ $S:0}
 A.acU.prototype={
 $2(a,b){var s=null,r=this.a,q=r.ay
 B.b.e1(q,new A.acL(r))
-return A.iZ(s,s,s,new A.P3(A.hf(q,!0,t.CG),A.cJ(0,B.c.ao(6e4/r.d)),A.a_(a).ax.b,110,!0,s),B.Mu)},
+return A.iZ(s,s,s,new A.P3(A.hf(q,!0,t.CG),A.cJ(0,B.c.ao(6e4/r.d)),A.a_(a).ax.y,110,!0,s),B.Mu)},
 $S:468}
 A.acL.prototype={
 $1(a){return new A.ej(Date.now(),0,!1).eI(a).a>B.j.ao(A.cJ(0,B.c.ao(6e4/this.a.d)).a*2)},
@@ -76608,14 +76608,14 @@ aA(a,b){var s,r,q,p,o,n,m,l,k,j,i,h=this,g=Date.now(),f=b.a/2,e=b.b/2,d=B.j.eG(h
 for(s=h.b,r=s.length,q=h.d,p=a.a,o=h.e,n=0;n<s.length;s.length===r||(0,A.u)(s),++n){m=s[n]
 l=B.j.eG(A.cJ(0-m.b,g-m.a).a,1000)
 if(l>d)continue
-k=1-l/d
+k=l/d
 $.U()
 j=new A.h5(B.be,B.b0,B.cE,B.cF,B.bs)
-j.r=q.Gt(k*0.55).gp()
+j.r=q.Gt(k*0.7).gp()
 j.b=B.b1
-j.c=3
+j.c=2+k*4
 i=j.e2()
-p.drawCircle(f,e,o*k,i)
+p.drawCircle(f,e,o*(1-k),i)
 i.delete()}},
 ek(a){return!0}}
 A.CE.prototype={
