@@ -584,16 +584,26 @@ class _RipplePainter extends CustomPainter {
       final int elapsedMs = now.difference(start).inMilliseconds;
       if (elapsedMs > durationMs) continue;
       final double progress = elapsedMs / durationMs;
-      final double radius =
-          inward ? maxRadius * (1.0 - progress) : progress * maxRadius;
-      final double opacity = (1.0 - progress) * 0.55;
+      final double radius;
+      final double opacity;
+      final double strokeWidth;
+      if (inward) {
+        // 外側(暗・細)→中央(明・太): 到達瞬間が最も鮮明でビートと重なる
+        radius = maxRadius * (1.0 - progress);
+        opacity = progress * 0.7;
+        strokeWidth = 2.0 + progress * 4.0;
+      } else {
+        radius = progress * maxRadius;
+        opacity = (1.0 - progress) * 0.55;
+        strokeWidth = 3.0;
+      }
       canvas.drawCircle(
         center,
         radius,
         Paint()
           ..color = color.withValues(alpha: opacity)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 3.0,
+          ..strokeWidth = strokeWidth,
       );
     }
   }
