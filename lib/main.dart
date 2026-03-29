@@ -351,29 +351,6 @@ class _MetronomePageState extends State<MetronomePage>
                     clipBehavior: Clip.none,
                     alignment: Alignment.center,
                     children: <Widget>[
-                      if (_showRipple)
-                        IgnorePointer(
-                          child: AnimatedBuilder(
-                            animation: _rippleDriverController,
-                            builder: (BuildContext context, Widget? _) {
-                              _rippleStartTimes.removeWhere(
-                                (DateTime t) =>
-                                    DateTime.now().difference(t) > _beatDuration * 2,
-                              );
-                              return CustomPaint(
-                                size: const Size(220, 220),
-                                painter: _RipplePainter(
-                                  startTimes: List<DateTime>.from(_rippleStartTimes),
-                                  rippleDuration: _beatDuration,
-                                  color: Theme.of(context).colorScheme.secondary,
-                                  maxRadius: 110,
-                                  circleRadius: 60,
-                                  inward: true,
-                                ),
-                              );
-                            },
-                          ),
-                        ),
                       Listener(
                         onPointerDown: (_) => _onCircleTap(),
                         behavior: HitTestBehavior.opaque,
@@ -403,6 +380,29 @@ class _MetronomePageState extends State<MetronomePage>
                           ),
                         ),
                       ),
+                      if (_showRipple)
+                        IgnorePointer(
+                          child: AnimatedBuilder(
+                            animation: _rippleDriverController,
+                            builder: (BuildContext context, Widget? _) {
+                              _rippleStartTimes.removeWhere(
+                                (DateTime t) =>
+                                    DateTime.now().difference(t) > _beatDuration * 2,
+                              );
+                              return CustomPaint(
+                                size: const Size(220, 220),
+                                painter: _RipplePainter(
+                                  startTimes: List<DateTime>.from(_rippleStartTimes),
+                                  rippleDuration: _beatDuration,
+                                  color: Theme.of(context).colorScheme.secondary,
+                                  maxRadius: 110,
+                                  circleRadius: 60,
+                                  inward: true,
+                                ),
+                              );
+                            },
+                          ),
+                        ),
                       if (_showNeedle)
                         IgnorePointer(
                           child: AnimatedBuilder(
