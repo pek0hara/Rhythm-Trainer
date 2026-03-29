@@ -367,6 +367,7 @@ class _MetronomePageState extends State<MetronomePage>
                                   rippleDuration: _beatDuration,
                                   color: Theme.of(context).colorScheme.secondary,
                                   maxRadius: 110,
+                                  circleRadius: 60,
                                   inward: true,
                                 ),
                               );
@@ -565,6 +566,7 @@ class _RipplePainter extends CustomPainter {
     required this.rippleDuration,
     required this.color,
     required this.maxRadius,
+    required this.circleRadius,
     this.inward = false,
   });
 
@@ -572,6 +574,7 @@ class _RipplePainter extends CustomPainter {
   final Duration rippleDuration;
   final Color color;
   final double maxRadius;
+  final double circleRadius;
   final bool inward;
 
   @override
@@ -597,11 +600,13 @@ class _RipplePainter extends CustomPainter {
         opacity = (1.0 - progress) * 0.55;
         strokeWidth = 3.0;
       }
+      final Color ringColor =
+          radius <= circleRadius ? Colors.white : color;
       canvas.drawCircle(
         center,
         radius,
         Paint()
-          ..color = color.withValues(alpha: opacity)
+          ..color = ringColor.withValues(alpha: opacity)
           ..style = PaintingStyle.stroke
           ..strokeWidth = strokeWidth,
       );
