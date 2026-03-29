@@ -365,7 +365,7 @@ class _MetronomePageState extends State<MetronomePage>
                                 painter: _RipplePainter(
                                   startTimes: List<DateTime>.from(_rippleStartTimes),
                                   rippleDuration: _beatDuration,
-                                  color: Theme.of(context).colorScheme.primary,
+                                  color: Theme.of(context).colorScheme.secondary,
                                   maxRadius: 110,
                                   inward: true,
                                 ),
