@@ -45,6 +45,7 @@ class _MetronomePageState extends State<MetronomePage>
   bool _isPlaying = false;
   bool _isReady = false;
   bool _showNeedle = true;
+  bool _showRipple = true;
   bool _soundEnabled = true;
 
   final TextEditingController _bpmTextController =
@@ -288,6 +289,11 @@ class _MetronomePageState extends State<MetronomePage>
                       onPressed: () => setState(() => _showNeedle = !_showNeedle),
                     ),
                     IconButton(
+                      icon: Icon(_showRipple ? Icons.blur_on : Icons.blur_off),
+                      tooltip: _showRipple ? '波を非表示' : '波を表示',
+                      onPressed: () => setState(() => _showRipple = !_showRipple),
+                    ),
+                    IconButton(
                       icon: Icon(_soundEnabled ? Icons.volume_up : Icons.volume_off),
                       tooltip: _soundEnabled ? '音声オフ' : '音声オン',
                       onPressed: _isReady ? _toggleSound : null,
@@ -345,26 +351,28 @@ class _MetronomePageState extends State<MetronomePage>
                     clipBehavior: Clip.none,
                     alignment: Alignment.center,
                     children: <Widget>[
-                      IgnorePointer(
-                        child: AnimatedBuilder(
-                          animation: _rippleDriverController,
-                          builder: (BuildContext context, Widget? _) {
-                            _rippleStartTimes.removeWhere(
-                              (DateTime t) =>
-                                  DateTime.now().difference(t) > _beatDuration * 2,
-                            );
-                            return CustomPaint(
-                              size: const Size(220, 220),
-                              painter: _RipplePainter(
-                                startTimes: List<DateTime>.from(_rippleStartTimes),
-                                rippleDuration: _beatDuration,
-                                color: Theme.of(context).colorScheme.primary,
-                                maxRadius: 110,
-                              ),
-                            );
-                          },
+                      if (_showRipple)
+                        IgnorePointer(
+                          child: AnimatedBuilder(
+                            animation: _rippleDriverController,
+                            builder: (BuildContext context, Widget? _) {
+                              _rippleStartTimes.removeWhere(
+                                (DateTime t) =>
+                                    DateTime.now().difference(t) > _beatDuration * 2,
+                              );
+                              return CustomPaint(
+                                size: const Size(220, 220),
+                                painter: _RipplePainter(
+                                  startTimes: List<DateTime>.from(_rippleStartTimes),
+                                  rippleDuration: _beatDuration,
+                                  color: Theme.of(context).colorScheme.primary,
+                                  maxRadius: 110,
+                                  inward: true,
+                                ),
+                              );
+                            },
+                          ),
                         ),
-                      ),
                       Listener(
                         onPointerDown: (_) => _onCircleTap(),
                         behavior: HitTestBehavior.opaque,
@@ -557,12 +565,14 @@ class _RipplePainter extends CustomPainter {
     required this.rippleDuration,
     required this.color,
     required this.maxRadius,
+    this.inward = false,
   });
 
   final List<DateTime> startTimes;
   final Duration rippleDuration;
   final Color color;
   final double maxRadius;
+  final bool inward;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -574,7 +584,8 @@ class _RipplePainter extends CustomPainter {
       final int elapsedMs = now.difference(start).inMilliseconds;
       if (elapsedMs > durationMs) continue;
       final double progress = elapsedMs / durationMs;
-      final double radius = progress * maxRadius;
+      final double radius =
+          inward ? maxRadius * (1.0 - progress) : progress * maxRadius;
       final double opacity = (1.0 - progress) * 0.55;
       canvas.drawCircle(
         center,
