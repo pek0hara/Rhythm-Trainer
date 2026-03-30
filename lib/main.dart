@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+enum VisualMode { metronome, wave, flash }
+
 void main() {
   runApp(const MetronomeApp());
 }
@@ -44,8 +46,7 @@ class _MetronomePageState extends State<MetronomePage>
   int _bpm = 100;
   bool _isPlaying = false;
   bool _isReady = false;
-  bool _showNeedle = true;
-  bool _showRipple = true;
+  VisualMode _visualMode = VisualMode.metronome;
   bool _soundEnabled = true;
 
   final TextEditingController _bpmTextController =
@@ -186,8 +187,12 @@ class _MetronomePageState extends State<MetronomePage>
     unawaited(_startNative());
 
     _beatSubscription = _eventChannel.receiveBroadcastStream().listen((_) {
-      _flashController?.forward(from: 0);
-      _rippleStartTimes.add(DateTime.now());
+      if (_visualMode == VisualMode.flash) {
+        _flashController?.forward(from: 0);
+      }
+      if (_visualMode == VisualMode.wave) {
+        _rippleStartTimes.add(DateTime.now());
+      }
     });
   }
 
@@ -283,15 +288,33 @@ class _MetronomePageState extends State<MetronomePage>
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
                       ),
                     ),
-                    IconButton(
-                      icon: Icon(_showNeedle ? Icons.straighten : Icons.straighten_outlined),
-                      tooltip: _showNeedle ? '針を非表示' : '針を表示',
-                      onPressed: () => setState(() => _showNeedle = !_showNeedle),
-                    ),
-                    IconButton(
-                      icon: Icon(_showRipple ? Icons.blur_on : Icons.blur_off),
-                      tooltip: _showRipple ? '波を非表示' : '波を表示',
-                      onPressed: () => setState(() => _showRipple = !_showRipple),
+                    SegmentedButton<VisualMode>(
+                      segments: const <ButtonSegment<VisualMode>>[
+                        ButtonSegment(
+                          value: VisualMode.metronome,
+                          icon: Icon(Icons.straighten),
+                          tooltip: 'メトロノーム',
+                        ),
+                        ButtonSegment(
+                          value: VisualMode.wave,
+                          icon: Icon(Icons.blur_on),
+                          tooltip: '波',
+                        ),
+                        ButtonSegment(
+                          value: VisualMode.flash,
+                          icon: Icon(Icons.flash_on),
+                          tooltip: '点滅',
+                        ),
+                      ],
+                      selected: <VisualMode>{_visualMode},
+                      onSelectionChanged: (Set<VisualMode> s) {
+                        setState(() {
+                          _visualMode = s.first;
+                          _rippleStartTimes.clear();
+                          _flashController?.stop(canceled: true);
+                          _flashController?.value = 0;
+                        });
+                      },
                     ),
                     IconButton(
                       icon: Icon(_soundEnabled ? Icons.volume_up : Icons.volume_off),
@@ -380,7 +403,7 @@ class _MetronomePageState extends State<MetronomePage>
                           ),
                         ),
                       ),
-                      if (_showRipple)
+                      if (_visualMode == VisualMode.wave)
                         IgnorePointer(
                           child: AnimatedBuilder(
                             animation: _rippleDriverController,
@@ -403,7 +426,7 @@ class _MetronomePageState extends State<MetronomePage>
                             },
                           ),
                         ),
-                      if (_showNeedle)
+                      if (_visualMode == VisualMode.metronome)
                         IgnorePointer(
                           child: AnimatedBuilder(
                             animation: _needleAngle,
