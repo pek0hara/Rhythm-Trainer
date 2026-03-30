@@ -282,7 +282,11 @@ class _MetronomePageState extends State<MetronomePage>
         return Dialog(
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          child: Padding(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.85,
+            ),
+            child: Padding(
             padding: const EdgeInsets.fromLTRB(24, 20, 8, 24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -329,10 +333,8 @@ class _MetronomePageState extends State<MetronomePage>
                 const SizedBox(height: 16),
                 const Divider(height: 1),
                 const SizedBox(height: 8),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 300),
+                Flexible(
                   child: ListView.separated(
-                    shrinkWrap: true,
                     itemCount: log.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 4),
                     itemBuilder: (_, int i) {
@@ -370,6 +372,7 @@ class _MetronomePageState extends State<MetronomePage>
                 ),
               ],
             ),
+          ),
           ),
         );
       },
