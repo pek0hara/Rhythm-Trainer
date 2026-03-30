@@ -8,6 +8,26 @@ import 'package:flutter/services.dart';
 
 enum VisualMode { metronome, wave, flash }
 
+class RhythmPattern {
+  const RhythmPattern({
+    required this.id,
+    required this.name,
+    required this.intervals,
+    this.isPreset = false,
+  });
+  final String id;
+  final String name;
+  final List<double> intervals; // 拍単位。合計 = 1小節
+  final bool isPreset;
+}
+
+const List<RhythmPattern> kRhythmPresets = <RhythmPattern>[
+  RhythmPattern(id: 'quarter', name: '4分', intervals: <double>[1, 1, 1, 1], isPreset: true),
+  RhythmPattern(id: 'preset_a', name: '定番A', intervals: <double>[1, 0.5, 0.5, 0.5, 0.5, 1], isPreset: true),
+  RhythmPattern(id: 'preset_b', name: '定番B', intervals: <double>[1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], isPreset: true),
+  RhythmPattern(id: 'preset_c', name: '定番C', intervals: <double>[1, 0.5, 1, 0.5, 0.5, 0.5], isPreset: true),
+];
+
 void main() {
   runApp(const MetronomeApp());
 }
@@ -61,6 +81,9 @@ class _MetronomePageState extends State<MetronomePage>
   final List<DateTime> _rippleStartTimes = [];
 
   static const int _warmupMeasurements = 0;
+
+  RhythmPattern _selectedPattern = kRhythmPresets.first;
+  final ValueNotifier<int> _patternIndexNotifier = ValueNotifier<int>(0);
 
   int _tapCount = 0;
   DateTime? _lastTapTime;
@@ -173,6 +196,7 @@ class _MetronomePageState extends State<MetronomePage>
 
   void _start() {
     _deviationState.value = (isWarmingUp: false, deviation: null, deviationMs: null);
+    _patternIndexNotifier.value = 0;
     setState(() {
       _isPlaying = true;
       _tapCount = 0;
@@ -204,6 +228,7 @@ class _MetronomePageState extends State<MetronomePage>
     setState(() => _isPlaying = false);
     _flashController?.stop();
     _rippleStartTimes.clear();
+    _patternIndexNotifier.value = 0;
     _needleController
       ..stop()
       ..reset();
@@ -217,12 +242,16 @@ class _MetronomePageState extends State<MetronomePage>
       // 初回タップ: メトロノーム同期 + 基準時刻記録 + 即座に測定中表示
       _restartMetronome();
       _lastTapTime = now;
+      _patternIndexNotifier.value = 0;
       _deviationState.value = (isWarmingUp: true, deviation: null, deviationMs: null);
     } else if (_lastTapTime != null) {
       final int intervalMs = now.difference(_lastTapTime!).inMilliseconds;
+      final int pi = _patternIndexNotifier.value;
+      final int expectedMs =
+          (_selectedPattern.intervals[pi] * _beatDuration.inMilliseconds).round();
       final double tappedBpm = 60000.0 / intervalMs;
-      final double deviation = tappedBpm - _bpm;
-      final int deviationMs = intervalMs - _beatDuration.inMilliseconds;
+      final double deviation = tappedBpm - (60000.0 / expectedMs);
+      final int deviationMs = intervalMs - expectedMs;
       final int measurementIndex = _tapCount - 1;
       if (measurementIndex >= _warmupMeasurements) {
         _tapDeviationLog.add((bpm: deviation, ms: deviationMs));
@@ -232,6 +261,8 @@ class _MetronomePageState extends State<MetronomePage>
           deviationMs: deviationMs,
         );
       }
+      _patternIndexNotifier.value =
+          (pi + 1) % _selectedPattern.intervals.length;
       _lastTapTime = now;
     }
     _tapCount++;
@@ -400,6 +431,7 @@ class _MetronomePageState extends State<MetronomePage>
     _rippleDriverController.dispose();
     _bpmTextController.dispose();
     _deviationState.dispose();
+    _patternIndexNotifier.dispose();
     super.dispose();
   }
 
@@ -493,6 +525,45 @@ class _MetronomePageState extends State<MetronomePage>
                           });
                         },
                 ),
+                const SizedBox(height: 12),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: kRhythmPresets.map((RhythmPattern p) {
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ChoiceChip(
+                          label: Text(p.name),
+                          selected: _selectedPattern.id == p.id,
+                          onSelected: _isPlaying
+                              ? null
+                              : (bool selected) {
+                                  if (selected) {
+                                    setState(() {
+                                      _selectedPattern = p;
+                                      _patternIndexNotifier.value = 0;
+                                    });
+                                  }
+                                },
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                if (_selectedPattern.id != 'quarter')
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _patternIndexNotifier,
+                      builder: (BuildContext context, int index, _) {
+                        return _PatternVisualizer(
+                          intervals: _selectedPattern.intervals,
+                          currentIndex: index,
+                          isPlaying: _isPlaying,
+                        );
+                      },
+                    ),
+                  ),
                 const SizedBox(height: 24),
                 SizedBox(
                   width: 220,
@@ -662,6 +733,41 @@ class _MetronomePageState extends State<MetronomePage>
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _PatternVisualizer extends StatelessWidget {
+  const _PatternVisualizer({
+    required this.intervals,
+    required this.currentIndex,
+    required this.isPlaying,
+  });
+
+  final List<double> intervals;
+  final int currentIndex;
+  final bool isPlaying;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme cs = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 32,
+      child: Row(
+        children: List<Widget>.generate(intervals.length, (int i) {
+          final bool isCurrent = isPlaying && i == currentIndex;
+          return Expanded(
+            flex: (intervals[i] * 100).round(),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              decoration: BoxDecoration(
+                color: isCurrent ? cs.primary : cs.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          );
+        }),
       ),
     );
   }
