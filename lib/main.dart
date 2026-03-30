@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -84,6 +83,8 @@ class _MetronomePageState extends State<MetronomePage>
 
   RhythmPattern _selectedPattern = kRhythmPresets.first;
   final ValueNotifier<int> _patternIndexNotifier = ValueNotifier<int>(0);
+  int _measurementPatternIndex = 0;
+  Timer? _patternTimer;
 
   int _tapCount = 0;
   DateTime? _lastTapTime;
@@ -186,6 +187,19 @@ class _MetronomePageState extends State<MetronomePage>
     await _methodChannel.invokeMethod<void>('stop');
   }
 
+  void _startPatternClock() {
+    _patternTimer?.cancel();
+    final int pi = _patternIndexNotifier.value;
+    final int ms =
+        (_selectedPattern.intervals[pi] * _beatDuration.inMilliseconds).round();
+    _patternTimer = Timer(Duration(milliseconds: ms), () {
+      if (!_isPlaying) return;
+      _patternIndexNotifier.value =
+          (pi + 1) % _selectedPattern.intervals.length;
+      _startPatternClock();
+    });
+  }
+
   void _restartMetronome() {
     _needleController
       ..duration = _beatDuration
@@ -228,7 +242,9 @@ class _MetronomePageState extends State<MetronomePage>
     setState(() => _isPlaying = false);
     _flashController?.stop();
     _rippleStartTimes.clear();
+    _patternTimer?.cancel();
     _patternIndexNotifier.value = 0;
+    _measurementPatternIndex = 0;
     _needleController
       ..stop()
       ..reset();
@@ -239,16 +255,18 @@ class _MetronomePageState extends State<MetronomePage>
     final DateTime now = DateTime.now();
 
     if (_tapCount == 0) {
-      // 初回タップ: メトロノーム同期 + 基準時刻記録 + 即座に測定中表示
+      // 初回タップ: メトロノーム同期 + パターンクロック起動
       _restartMetronome();
       _lastTapTime = now;
       _patternIndexNotifier.value = 0;
+      _measurementPatternIndex = 0;
       _deviationState.value = (isWarmingUp: true, deviation: null, deviationMs: null);
+      _startPatternClock();
     } else if (_lastTapTime != null) {
       final int intervalMs = now.difference(_lastTapTime!).inMilliseconds;
-      final int pi = _patternIndexNotifier.value;
-      final int expectedMs =
-          (_selectedPattern.intervals[pi] * _beatDuration.inMilliseconds).round();
+      final int expectedMs = (_selectedPattern.intervals[_measurementPatternIndex] *
+              _beatDuration.inMilliseconds)
+          .round();
       final double tappedBpm = 60000.0 / intervalMs;
       final double deviation = tappedBpm - (60000.0 / expectedMs);
       final int deviationMs = intervalMs - expectedMs;
@@ -261,8 +279,8 @@ class _MetronomePageState extends State<MetronomePage>
           deviationMs: deviationMs,
         );
       }
-      _patternIndexNotifier.value =
-          (pi + 1) % _selectedPattern.intervals.length;
+      _measurementPatternIndex =
+          (_measurementPatternIndex + 1) % _selectedPattern.intervals.length;
       _lastTapTime = now;
     }
     _tapCount++;
@@ -291,6 +309,47 @@ class _MetronomePageState extends State<MetronomePage>
     if (!kIsWeb) {
       await _methodChannel.invokeMethod<void>('setMuted', !next);
     }
+  }
+
+  void _showPatternSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('リズムパターン',
+                    style: Theme.of(ctx).textTheme.titleMedium),
+                const SizedBox(height: 16),
+                Column(
+                  children: kRhythmPresets.map((RhythmPattern p) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _PatternCard(
+                        pattern: p,
+                        isSelected: _selectedPattern.id == p.id,
+                        onTap: () {
+                          setState(() {
+                            _selectedPattern = p;
+                            _patternIndexNotifier.value = 0;
+                            _measurementPatternIndex = 0;
+                          });
+                          Navigator.of(ctx).pop();
+                        },
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _showTapLogDialog(BuildContext context) {
@@ -431,6 +490,7 @@ class _MetronomePageState extends State<MetronomePage>
     _rippleDriverController.dispose();
     _bpmTextController.dispose();
     _deviationState.dispose();
+    _patternTimer?.cancel();
     _patternIndexNotifier.dispose();
     super.dispose();
   }
@@ -452,6 +512,11 @@ class _MetronomePageState extends State<MetronomePage>
                         'Rhythm Checker',
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
                       ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.queue_music),
+                      tooltip: 'リズムパターン',
+                      onPressed: _isPlaying ? null : () => _showPatternSheet(context),
                     ),
                     IconButton(
                       icon: Icon(switch (_visualMode) {
@@ -524,31 +589,6 @@ class _MetronomePageState extends State<MetronomePage>
                             _bpmTextController.text = _bpm.toString();
                           });
                         },
-                ),
-                const SizedBox(height: 12),
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: kRhythmPresets.map((RhythmPattern p) {
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          label: Text(p.name),
-                          selected: _selectedPattern.id == p.id,
-                          onSelected: _isPlaying
-                              ? null
-                              : (bool selected) {
-                                  if (selected) {
-                                    setState(() {
-                                      _selectedPattern = p;
-                                      _patternIndexNotifier.value = 0;
-                                    });
-                                  }
-                                },
-                        ),
-                      );
-                    }).toList(),
-                  ),
                 ),
                 if (_selectedPattern.id != 'quarter')
                   Padding(
@@ -732,6 +772,54 @@ class _MetronomePageState extends State<MetronomePage>
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PatternCard extends StatelessWidget {
+  const _PatternCard({
+    required this.pattern,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final RhythmPattern pattern;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme cs = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        width: double.infinity,
+        height: 56,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: isSelected ? cs.primaryContainer : cs.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? cs.primary : Colors.transparent,
+            width: 2,
+          ),
+        ),
+        child: Row(
+          children: pattern.intervals.map((double interval) {
+            return Expanded(
+              flex: (interval * 100).round(),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 1.5),
+                decoration: BoxDecoration(
+                  color: isSelected ? cs.primary : cs.onSurfaceVariant,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            );
+          }).toList(),
         ),
       ),
     );
