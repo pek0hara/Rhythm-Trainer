@@ -288,28 +288,22 @@ class _MetronomePageState extends State<MetronomePage>
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
                       ),
                     ),
-                    SegmentedButton<VisualMode>(
-                      segments: const <ButtonSegment<VisualMode>>[
-                        ButtonSegment(
-                          value: VisualMode.metronome,
-                          icon: Icon(Icons.straighten),
-                          tooltip: 'メトロノーム',
-                        ),
-                        ButtonSegment(
-                          value: VisualMode.wave,
-                          icon: Icon(Icons.blur_on),
-                          tooltip: '波',
-                        ),
-                        ButtonSegment(
-                          value: VisualMode.flash,
-                          icon: Icon(Icons.flash_on),
-                          tooltip: '点滅',
-                        ),
-                      ],
-                      selected: <VisualMode>{_visualMode},
-                      onSelectionChanged: (Set<VisualMode> s) {
+                    IconButton(
+                      icon: Icon(switch (_visualMode) {
+                        VisualMode.metronome => Icons.straighten,
+                        VisualMode.wave      => Icons.blur_on,
+                        VisualMode.flash     => Icons.flash_on,
+                      }),
+                      tooltip: switch (_visualMode) {
+                        VisualMode.metronome => 'メトロノーム',
+                        VisualMode.wave      => '波',
+                        VisualMode.flash     => '点滅',
+                      },
+                      onPressed: () {
                         setState(() {
-                          _visualMode = s.first;
+                          _visualMode = VisualMode.values[
+                            (_visualMode.index + 1) % VisualMode.values.length
+                          ];
                           _rippleStartTimes.clear();
                           _flashController?.stop(canceled: true);
                           _flashController?.value = 0;
