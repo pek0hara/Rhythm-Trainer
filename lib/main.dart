@@ -219,15 +219,12 @@ class _MetronomePageState extends State<MetronomePage>
       _deviationState.value = (isWarmingUp: true, deviation: null);
     } else if (_lastTapTime != null) {
       final int intervalMs = now.difference(_lastTapTime!).inMilliseconds;
-      if (intervalMs > 100) {
-        final double tappedBpm = 60000.0 / intervalMs;
-        final double deviation = tappedBpm - _bpm;
-        // _tapCount==1 が1回目の測定。_tapCount-1 が0始まりの測定インデックス。
-        final int measurementIndex = _tapCount - 1;
-        if (measurementIndex >= _warmupMeasurements) {
-          _tapDeviationLog.add(deviation);
-          _deviationState.value = (isWarmingUp: false, deviation: deviation);
-        }
+      final double tappedBpm = 60000.0 / intervalMs;
+      final double deviation = tappedBpm - _bpm;
+      final int measurementIndex = _tapCount - 1;
+      if (measurementIndex >= _warmupMeasurements) {
+        _tapDeviationLog.add(deviation);
+        _deviationState.value = (isWarmingUp: false, deviation: deviation);
       }
       _lastTapTime = now;
     }
