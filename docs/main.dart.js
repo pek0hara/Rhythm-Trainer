@@ -78135,17 +78135,16 @@ r=s.z
 r===$&&A.a()
 r.eE()
 r.st(r.a)},
-a7c(){var s,r,q,p,o,n=this
-if(!n.e)return
+a7c(){var s,r,q,p,o=this
+if(!o.e)return
 s=new A.e_(Date.now(),0,!1)
-r=n.ay
-if(r===0){n.a9n()
-n.ch=s
-n.CW.st(new A.oT(null,!0))}else{q=n.ch
-if(q!=null){p=B.i.eb(s.ew(q).a,1000)
-if(p>100){o=6e4/p-n.d
-if(r-1>=0){n.cx.push(o)
-n.CW.st(new A.oT(o,!1))}}n.ch=s}}++n.ay},
+r=o.ay
+if(r===0){o.a9n()
+o.ch=s
+o.CW.st(new A.oT(null,!0))}else{q=o.ch
+if(q!=null){p=6e4/B.i.eb(s.ew(q).a,1000)-o.d
+if(r-1>=0){o.cx.push(p)
+o.CW.st(new A.oT(p,!1))}o.ch=s}}++o.ay},
 J5(){var s=this,r=s.x,q=A.xt(r.a.a,null)
 if(q!=null&&q>=40&&q<=240)s.ao(new A.ae1(s,q))
 else r.sfD(B.i.k(s.d))},
