@@ -22,12 +22,16 @@ class RhythmPattern {
 
 const List<RhythmPattern> kRhythmPresets = <RhythmPattern>[
   RhythmPattern(id: 'quarter', name: '4分', intervals: <double>[1, 1, 1, 1], isPreset: true),
-  RhythmPattern(id: 'preset_a', name: '定番A', intervals: <double>[1, 0.5, 0.5, 0.5, 0.5, 1], isPreset: true),
+  RhythmPattern(id: 'preset_a', name: '定番A', intervals: <double>[1, 1, 0.5, 0.5, 0.5, 0.5], isPreset: true),
   RhythmPattern(id: 'preset_b', name: '定番B', intervals: <double>[1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], isPreset: true),
   RhythmPattern(id: 'preset_c', name: '定番C', intervals: <double>[1, 0.5, 1, 0.5, 0.5, 0.5], isPreset: true),
 ];
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+    DeviceOrientation.portraitUp,
+  ]);
   runApp(const MetronomeApp());
 }
 
@@ -83,15 +87,16 @@ class _MetronomePageState extends State<MetronomePage>
 
   RhythmPattern _selectedPattern = kRhythmPresets.first;
   final ValueNotifier<int> _patternIndexNotifier = ValueNotifier<int>(0);
-  int _measurementPatternIndex = 0;
   Timer? _patternTimer;
 
   int _tapCount = 0;
-  DateTime? _lastTapTime;
-  final ValueNotifier<({bool isWarmingUp, double? deviation, int? deviationMs})>
+  DateTime? _syncTime;
+  DateTime? _lastMeasuredTapTime;
+  int _lastMeasuredExpectedMs = 0;
+  final ValueNotifier<({bool isWarmingUp, double? ratio, double? bpm, int? deviationMs})>
       _deviationState =
-      ValueNotifier((isWarmingUp: false, deviation: null, deviationMs: null));
-  final List<({double bpm, int ms})> _tapDeviationLog = [];
+      ValueNotifier((isWarmingUp: false, ratio: null, bpm: null, deviationMs: null));
+  final List<({double ratio, double bpm, int ms})> _tapDeviationLog = [];
 
   @override
   void initState() {
@@ -209,12 +214,14 @@ class _MetronomePageState extends State<MetronomePage>
   }
 
   void _start() {
-    _deviationState.value = (isWarmingUp: false, deviation: null, deviationMs: null);
+    _deviationState.value = (isWarmingUp: false, ratio: null, bpm: null, deviationMs: null);
     _patternIndexNotifier.value = 0;
     setState(() {
       _isPlaying = true;
       _tapCount = 0;
-      _lastTapTime = null;
+      _syncTime = null;
+      _lastMeasuredTapTime = null;
+      _lastMeasuredExpectedMs = 0;
       _tapDeviationLog.clear();
     });
 
@@ -244,10 +251,41 @@ class _MetronomePageState extends State<MetronomePage>
     _rippleStartTimes.clear();
     _patternTimer?.cancel();
     _patternIndexNotifier.value = 0;
-    _measurementPatternIndex = 0;
+    _syncTime = null;
+    _lastMeasuredTapTime = null;
+    _lastMeasuredExpectedMs = 0;
     _needleController
       ..stop()
       ..reset();
+  }
+
+  /// 初回タップを t=0 として、経過時間 [elapsedMs] に最も近い拍を返す。
+  /// 返値: 期待拍時刻(ms) と、その拍に到達するインターバル幅(ms)。
+  ({int expectedMs, double intervalMs}) _nearestBeat(int elapsedMs) {
+    final double beatMs = _beatDuration.inMilliseconds.toDouble();
+    final List<double> intervals = _selectedPattern.intervals;
+    final double totalPatternMs =
+        intervals.fold(0.0, (double s, double v) => s + v) * beatMs;
+
+    double t = 0.0;
+    double bestT = 0.0;
+    double bestIntervalMs = intervals[0] * beatMs;
+    double bestDiff = double.infinity;
+
+    // t=0 はシンク拍なので除外。各インターバルを積み上げて次の拍を候補にする。
+    final int maxReps = (elapsedMs / totalPatternMs + 2).ceil().clamp(2, 200);
+    for (int rep = 0; rep < maxReps; rep++) {
+      for (int i = 0; i < intervals.length; i++) {
+        t += intervals[i] * beatMs;
+        final double diff = (t - elapsedMs).abs();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestT = t;
+          bestIntervalMs = intervals[i] * beatMs;
+        }
+      }
+    }
+    return (expectedMs: bestT.round(), intervalMs: bestIntervalMs);
   }
 
   void _onCircleTap() {
@@ -257,31 +295,38 @@ class _MetronomePageState extends State<MetronomePage>
     if (_tapCount == 0) {
       // 初回タップ: メトロノーム同期 + パターンクロック起動
       _restartMetronome();
-      _lastTapTime = now;
+      _syncTime = now;
+      _lastMeasuredTapTime = now;
+      _lastMeasuredExpectedMs = 0;
       _patternIndexNotifier.value = 0;
-      _measurementPatternIndex = 0;
-      _deviationState.value = (isWarmingUp: true, deviation: null, deviationMs: null);
+      _deviationState.value = (isWarmingUp: true, ratio: null, bpm: null, deviationMs: null);
       _startPatternClock();
-    } else if (_lastTapTime != null) {
-      final int intervalMs = now.difference(_lastTapTime!).inMilliseconds;
-      final int expectedMs = (_selectedPattern.intervals[_measurementPatternIndex] *
-              _beatDuration.inMilliseconds)
-          .round();
-      final double tappedBpm = 60000.0 / intervalMs;
-      final double deviation = tappedBpm - (60000.0 / expectedMs);
-      final int deviationMs = intervalMs - expectedMs;
+    } else if (_syncTime != null && _lastMeasuredTapTime != null) {
+      // 絶対時間でどの拍かを特定 → 1拍押し損ねても位置を見失わない
+      final int elapsedMs = now.difference(_syncTime!).inMilliseconds;
+      final ({int expectedMs, double intervalMs}) nearest = _nearestBeat(elapsedMs);
+
+      // 偏差は「前回タップからの実IOI」で測る → リズム感を反映
+      final int actualIoi = now.difference(_lastMeasuredTapTime!).inMilliseconds;
+      final int expectedIoi = nearest.expectedMs - _lastMeasuredExpectedMs;
+      final int deviationMs = actualIoi - expectedIoi;
+      final double ratio = expectedIoi > 0 ? deviationMs / expectedIoi : 0.0;
+      final double bpmDeviation =
+          60000.0 / actualIoi - 60000.0 / expectedIoi;
+
+      _lastMeasuredTapTime = now;
+      _lastMeasuredExpectedMs = nearest.expectedMs;
+
       final int measurementIndex = _tapCount - 1;
       if (measurementIndex >= _warmupMeasurements) {
-        _tapDeviationLog.add((bpm: deviation, ms: deviationMs));
+        _tapDeviationLog.add((ratio: ratio, bpm: bpmDeviation, ms: deviationMs));
         _deviationState.value = (
           isWarmingUp: false,
-          deviation: deviation,
+          ratio: ratio,
+          bpm: bpmDeviation,
           deviationMs: deviationMs,
         );
       }
-      _measurementPatternIndex =
-          (_measurementPatternIndex + 1) % _selectedPattern.intervals.length;
-      _lastTapTime = now;
     }
     _tapCount++;
   }
@@ -335,8 +380,10 @@ class _MetronomePageState extends State<MetronomePage>
                         onTap: () {
                           setState(() {
                             _selectedPattern = p;
+                            _syncTime = null;
+                            _lastMeasuredTapTime = null;
+                            _lastMeasuredExpectedMs = 0;
                             _patternIndexNotifier.value = 0;
-                            _measurementPatternIndex = 0;
                           });
                           Navigator.of(ctx).pop();
                         },
@@ -353,17 +400,20 @@ class _MetronomePageState extends State<MetronomePage>
   }
 
   void _showTapLogDialog(BuildContext context) {
-    final List<({double bpm, int ms})> log = _tapDeviationLog;
+    final List<({double ratio, double bpm, int ms})> log = _tapDeviationLog;
     final int total = log.length;
-    final int nGreen = log.where((e) => e.bpm.abs() < 2).length;
+    final int nGreen = log.where((e) => e.ratio.abs() < 0.05).length;
     final int nOrange =
-        log.where((e) => e.bpm.abs() >= 2 && e.bpm.abs() < 5).length;
+        log.where((e) => e.ratio.abs() >= 0.05 && e.ratio.abs() < 0.10).length;
     final int nRed = total - nGreen - nOrange;
     String pct(int n) => '${(n / total * 100).round()}%';
 
-    Color devColor(double d) => d.abs() < 2
+    final double avgBpm = _bpm + log.fold(0.0, (s, e) => s + e.bpm) / total;
+    final double avgMs = log.fold(0.0, (s, e) => s + e.ms) / total;
+
+    Color devColor(double r) => r.abs() < 0.05
         ? Colors.green.shade600
-        : d.abs() < 5
+        : r.abs() < 0.10
             ? Colors.orange.shade700
             : Colors.red.shade600;
 
@@ -423,7 +473,30 @@ class _MetronomePageState extends State<MetronomePage>
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.only(right: 16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: <Widget>[
+                      Text('平均 BPM', style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                      Text(
+                        avgBpm.toStringAsFixed(1),
+                        style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(width: 24),
+                      Text('平均ズレ', style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                      Text(
+                        '${avgMs >= 0 ? '+' : ''}${avgMs.toStringAsFixed(1)}ms',
+                        style: tt.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: avgMs.abs() < 20 ? Colors.green.shade600 : Colors.orange.shade700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
                 const Divider(height: 1),
                 const SizedBox(height: 8),
                 Flexible(
@@ -431,9 +504,10 @@ class _MetronomePageState extends State<MetronomePage>
                     itemCount: log.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 4),
                     itemBuilder: (_, int i) {
+                      final double r = log[i].ratio;
                       final double d = log[i].bpm;
                       final int ms = log[i].ms;
-                      final Color c = devColor(d);
+                      final Color c = devColor(r);
                       return Padding(
                         padding: const EdgeInsets.only(right: 16),
                         child: Row(
@@ -730,7 +804,7 @@ class _MetronomePageState extends State<MetronomePage>
                 ValueListenableBuilder(
                   valueListenable: _deviationState,
                   builder: (BuildContext context,
-                      ({bool isWarmingUp, double? deviation, int? deviationMs}) state, _) {
+                      ({bool isWarmingUp, double? ratio, double? bpm, int? deviationMs}) state, _) {
                     if (!_isPlaying) return const SizedBox.shrink();
                     if (state.isWarmingUp) {
                       return Text(
@@ -740,12 +814,13 @@ class _MetronomePageState extends State<MetronomePage>
                             ),
                       );
                     }
-                    final double? d = state.deviation;
+                    final double? r = state.ratio;
+                    final double? d = state.bpm;
                     final int? ms = state.deviationMs;
-                    if (d == null || ms == null) return const SizedBox.shrink();
-                    final Color c = d.abs() < 2
+                    if (r == null || d == null || ms == null) return const SizedBox.shrink();
+                    final Color c = r.abs() < 0.05
                         ? Colors.green
-                        : d.abs() < 5
+                        : r.abs() < 0.10
                             ? Colors.orange
                             : Colors.red;
                     return Column(
