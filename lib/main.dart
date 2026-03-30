@@ -18,7 +18,7 @@ class MetronomeApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Metronome',
+      title: 'Rhythm Checker',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
@@ -64,9 +64,10 @@ class _MetronomePageState extends State<MetronomePage>
 
   int _tapCount = 0;
   DateTime? _lastTapTime;
-  final ValueNotifier<({bool isWarmingUp, double? deviation})> _deviationState =
-      ValueNotifier((isWarmingUp: false, deviation: null));
-  final List<double> _tapDeviationLog = [];
+  final ValueNotifier<({bool isWarmingUp, double? deviation, int? deviationMs})>
+      _deviationState =
+      ValueNotifier((isWarmingUp: false, deviation: null, deviationMs: null));
+  final List<({double bpm, int ms})> _tapDeviationLog = [];
 
   @override
   void initState() {
@@ -171,7 +172,7 @@ class _MetronomePageState extends State<MetronomePage>
   }
 
   void _start() {
-    _deviationState.value = (isWarmingUp: false, deviation: null);
+    _deviationState.value = (isWarmingUp: false, deviation: null, deviationMs: null);
     setState(() {
       _isPlaying = true;
       _tapCount = 0;
@@ -216,15 +217,20 @@ class _MetronomePageState extends State<MetronomePage>
       // 初回タップ: メトロノーム同期 + 基準時刻記録 + 即座に測定中表示
       _restartMetronome();
       _lastTapTime = now;
-      _deviationState.value = (isWarmingUp: true, deviation: null);
+      _deviationState.value = (isWarmingUp: true, deviation: null, deviationMs: null);
     } else if (_lastTapTime != null) {
       final int intervalMs = now.difference(_lastTapTime!).inMilliseconds;
       final double tappedBpm = 60000.0 / intervalMs;
       final double deviation = tappedBpm - _bpm;
+      final int deviationMs = intervalMs - _beatDuration.inMilliseconds;
       final int measurementIndex = _tapCount - 1;
       if (measurementIndex >= _warmupMeasurements) {
-        _tapDeviationLog.add(deviation);
-        _deviationState.value = (isWarmingUp: false, deviation: deviation);
+        _tapDeviationLog.add((bpm: deviation, ms: deviationMs));
+        _deviationState.value = (
+          isWarmingUp: false,
+          deviation: deviation,
+          deviationMs: deviationMs,
+        );
       }
       _lastTapTime = now;
     }
@@ -257,11 +263,11 @@ class _MetronomePageState extends State<MetronomePage>
   }
 
   void _showTapLogDialog(BuildContext context) {
-    final List<double> log = _tapDeviationLog;
+    final List<({double bpm, int ms})> log = _tapDeviationLog;
     final int total = log.length;
-    final int nGreen = log.where((double d) => d.abs() < 2).length;
+    final int nGreen = log.where((e) => e.bpm.abs() < 2).length;
     final int nOrange =
-        log.where((double d) => d.abs() >= 2 && d.abs() < 5).length;
+        log.where((e) => e.bpm.abs() >= 2 && e.bpm.abs() < 5).length;
     final int nRed = total - nGreen - nOrange;
     String pct(int n) => '${(n / total * 100).round()}%';
 
@@ -335,7 +341,8 @@ class _MetronomePageState extends State<MetronomePage>
                     itemCount: log.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 4),
                     itemBuilder: (_, int i) {
-                      final double d = log[i];
+                      final double d = log[i].bpm;
+                      final int ms = log[i].ms;
                       final Color c = devColor(d);
                       return Padding(
                         padding: const EdgeInsets.only(right: 16),
@@ -343,7 +350,7 @@ class _MetronomePageState extends State<MetronomePage>
                           children: <Widget>[
                             Container(
                               width: 4,
-                              height: 32,
+                              height: 36,
                               decoration: BoxDecoration(
                                 color: c,
                                 borderRadius: BorderRadius.circular(2),
@@ -354,12 +361,21 @@ class _MetronomePageState extends State<MetronomePage>
                                 style: tt.bodyMedium
                                     ?.copyWith(color: cs.onSurfaceVariant)),
                             const Spacer(),
-                            Text(
-                              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
-                              style: tt.bodyLarge?.copyWith(
-                                color: c,
-                                fontWeight: FontWeight.w600,
-                              ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: <Widget>[
+                                Text(
+                                  '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
+                                  style: tt.bodyLarge?.copyWith(
+                                    color: c,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  '${ms >= 0 ? '+' : ''}${ms}ms',
+                                  style: tt.bodySmall?.copyWith(color: c),
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -401,7 +417,7 @@ class _MetronomePageState extends State<MetronomePage>
                   children: <Widget>[
                     const Expanded(
                       child: Text(
-                        'Metronome',
+                        'Rhythm Checker',
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
                       ),
                     ),
@@ -603,7 +619,7 @@ class _MetronomePageState extends State<MetronomePage>
                 ValueListenableBuilder(
                   valueListenable: _deviationState,
                   builder: (BuildContext context,
-                      ({bool isWarmingUp, double? deviation}) state, _) {
+                      ({bool isWarmingUp, double? deviation, int? deviationMs}) state, _) {
                     if (!_isPlaying) return const SizedBox.shrink();
                     if (state.isWarmingUp) {
                       return Text(
@@ -614,16 +630,24 @@ class _MetronomePageState extends State<MetronomePage>
                       );
                     }
                     final double? d = state.deviation;
-                    if (d == null) return const SizedBox.shrink();
-                    return Text(
-                      '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: d.abs() < 2
-                                ? Colors.green
-                                : d.abs() < 5
-                                    ? Colors.orange
-                                    : Colors.red,
-                          ),
+                    final int? ms = state.deviationMs;
+                    if (d == null || ms == null) return const SizedBox.shrink();
+                    final Color c = d.abs() < 2
+                        ? Colors.green
+                        : d.abs() < 5
+                            ? Colors.orange
+                            : Colors.red;
+                    return Column(
+                      children: <Widget>[
+                        Text(
+                          '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
+                          style: Theme.of(context).textTheme.titleLarge?.copyWith(color: c),
+                        ),
+                        Text(
+                          '${ms >= 0 ? '+' : ''}${ms}ms',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: c),
+                        ),
+                      ],
                     );
                   },
                 ),
