@@ -259,6 +259,123 @@ class _MetronomePageState extends State<MetronomePage>
     }
   }
 
+  void _showTapLogDialog(BuildContext context) {
+    final List<double> log = _tapDeviationLog;
+    final int total = log.length;
+    final int nGreen = log.where((double d) => d.abs() < 2).length;
+    final int nOrange =
+        log.where((double d) => d.abs() >= 2 && d.abs() < 5).length;
+    final int nRed = total - nGreen - nOrange;
+    String pct(int n) => '${(n / total * 100).round()}%';
+
+    Color devColor(double d) => d.abs() < 2
+        ? Colors.green.shade600
+        : d.abs() < 5
+            ? Colors.orange.shade700
+            : Colors.red.shade600;
+
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext ctx) {
+        final ColorScheme cs = Theme.of(ctx).colorScheme;
+        final TextTheme tt = Theme.of(ctx).textTheme;
+        return Dialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 20, 8, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Icon(Icons.bar_chart_rounded, color: cs.primary),
+                    const SizedBox(width: 8),
+                    Text('タップログ', style: tt.titleLarge),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => Navigator.of(ctx).pop(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Padding(
+                  padding: const EdgeInsets.only(right: 16),
+                  child: Row(
+                    children: <Widget>[
+                      _StatChip(
+                          label: '±2以内',
+                          count: nGreen,
+                          pct: pct(nGreen),
+                          color: Colors.green.shade600),
+                      const SizedBox(width: 8),
+                      _StatChip(
+                          label: '±5以内',
+                          count: nOrange,
+                          pct: pct(nOrange),
+                          color: Colors.orange.shade700),
+                      const SizedBox(width: 8),
+                      _StatChip(
+                          label: '±5超',
+                          count: nRed,
+                          pct: pct(nRed),
+                          color: Colors.red.shade600),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Divider(height: 1),
+                const SizedBox(height: 8),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 300),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: log.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 4),
+                    itemBuilder: (_, int i) {
+                      final double d = log[i];
+                      final Color c = devColor(d);
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 16),
+                        child: Row(
+                          children: <Widget>[
+                            Container(
+                              width: 4,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                color: c,
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text('#${i + 1}',
+                                style: tt.bodyMedium
+                                    ?.copyWith(color: cs.onSurfaceVariant)),
+                            const Spacer(),
+                            Text(
+                              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
+                              style: tt.bodyLarge?.copyWith(
+                                color: c,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     _beatSubscription?.cancel();
@@ -512,65 +629,57 @@ class _MetronomePageState extends State<MetronomePage>
                 ),
                 if (!_isPlaying && _tapDeviationLog.isNotEmpty)
                   TextButton.icon(
-                    onPressed: () => showDialog<void>(
-                      context: context,
-                      builder: (_) => AlertDialog(
-                        title: const Text('タップログ'),
-                        content: SingleChildScrollView(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Builder(builder: (_) {
-                                final int total = _tapDeviationLog.length;
-                                final int green = _tapDeviationLog.where((double d) => d.abs() < 2).length;
-                                final int orange = _tapDeviationLog.where((double d) => d.abs() >= 2 && d.abs() < 5).length;
-                                final int red = total - green - orange;
-                                String pct(int n) => '${(n / total * 100).round()}%';
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 12),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                    children: <Widget>[
-                                      Text('🟢 $green (${pct(green)})', style: const TextStyle(color: Colors.green)),
-                                      Text('🟡 $orange (${pct(orange)})', style: const TextStyle(color: Colors.orange)),
-                                      Text('🔴 $red (${pct(red)})', style: const TextStyle(color: Colors.red)),
-                                    ],
-                                  ),
-                                );
-                              }),
-                              ...List<Widget>.generate(
-                                  _tapDeviationLog.length, (int i) {
-                                final double d = _tapDeviationLog[i];
-                                return Text(
-                                  '#${i + 1}:  ${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} BPM',
-                                  style: TextStyle(
-                                    color: d.abs() < 2
-                                        ? Colors.green
-                                        : d.abs() < 5
-                                            ? Colors.orange
-                                            : Colors.red,
-                                  ),
-                                );
-                              }),
-                            ],
-                          ),
-                        ),
-                        actions: <Widget>[
-                          TextButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('閉じる'),
-                          ),
-                        ],
-                      ),
-                    ),
-                    icon: const Icon(Icons.list_alt),
+                    onPressed: () => _showTapLogDialog(context),
+                    icon: const Icon(Icons.bar_chart_rounded),
                     label: const Text('ログを見る'),
                   ),
                 const SizedBox(height: 24),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatChip extends StatelessWidget {
+  const _StatChip({
+    required this.label,
+    required this.count,
+    required this.pct,
+    required this.color,
+  });
+
+  final String label;
+  final int count;
+  final String pct;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          children: <Widget>[
+            Text(count.toString(),
+                style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: color)),
+            Text(pct,
+                style: TextStyle(fontSize: 12, color: color)),
+            const SizedBox(height: 2),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 10, color: Colors.grey.shade600)),
+          ],
         ),
       ),
     );
