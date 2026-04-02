@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 enum VisualMode { metronome, wave, flash }
 
@@ -46,6 +47,7 @@ class MetronomeApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
+        textTheme: GoogleFonts.notoSansJpTextTheme(),
       ),
       home: const MetronomePage(),
     );
@@ -71,6 +73,7 @@ class _MetronomePageState extends State<MetronomePage>
   bool _isReady = false;
   VisualMode _visualMode = VisualMode.metronome;
   bool _soundEnabled = true;
+  bool _isTapping = false;
 
   final TextEditingController _bpmTextController =
       TextEditingController(text: '100');
@@ -81,6 +84,7 @@ class _MetronomePageState extends State<MetronomePage>
   late final Animation<double> _needleAngle;
   AnimationController? _flashController;
   late final AnimationController _rippleDriverController;
+  late final AnimationController _patternProgressController;
   final List<DateTime> _rippleStartTimes = [];
 
   static const int _warmupMeasurements = 0;
@@ -93,9 +97,10 @@ class _MetronomePageState extends State<MetronomePage>
   DateTime? _syncTime;
   DateTime? _lastMeasuredTapTime;
   int _lastMeasuredExpectedMs = 0;
-  final ValueNotifier<({bool isWarmingUp, double? ratio, double? bpm, int? deviationMs})>
+  double? _sessionAvgBpm;
+  final ValueNotifier<({bool isWarmingUp, bool isTooFast, double? ratio, double? bpm, int? deviationMs})>
       _deviationState =
-      ValueNotifier((isWarmingUp: false, ratio: null, bpm: null, deviationMs: null));
+      ValueNotifier((isWarmingUp: false, isTooFast: false, ratio: null, bpm: null, deviationMs: null));
   final List<({double ratio, double bpm, int ms})> _tapDeviationLog = [];
 
   @override
@@ -113,6 +118,10 @@ class _MetronomePageState extends State<MetronomePage>
       vsync: this,
       duration: const Duration(seconds: 1),
     )..repeat();
+    _patternProgressController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    );
     _needleAngle = Tween<double>(
       begin: -math.pi / 4,
       end: math.pi / 4,
@@ -197,6 +206,8 @@ class _MetronomePageState extends State<MetronomePage>
     final int pi = _patternIndexNotifier.value;
     final int ms =
         (_selectedPattern.intervals[pi] * _beatDuration.inMilliseconds).round();
+    _patternProgressController.duration = Duration(milliseconds: ms);
+    _patternProgressController.forward(from: 0.0);
     _patternTimer = Timer(Duration(milliseconds: ms), () {
       if (!_isPlaying) return;
       _patternIndexNotifier.value =
@@ -214,7 +225,7 @@ class _MetronomePageState extends State<MetronomePage>
   }
 
   void _start() {
-    _deviationState.value = (isWarmingUp: false, ratio: null, bpm: null, deviationMs: null);
+    _deviationState.value = (isWarmingUp: false, isTooFast: false, ratio: null, bpm: null, deviationMs: null);
     _patternIndexNotifier.value = 0;
     setState(() {
       _isPlaying = true;
@@ -250,7 +261,20 @@ class _MetronomePageState extends State<MetronomePage>
     _flashController?.stop();
     _rippleStartTimes.clear();
     _patternTimer?.cancel();
+    _patternProgressController.stop();
+    _patternProgressController.value = 0.0;
     _patternIndexNotifier.value = 0;
+    // スタート〜最後のタップ間の実測BPMを確定
+    // 拍数 = タップ数 × (パターン合計拍数 / パターンタップ数)
+    final int measuredTaps = _tapCount - 1;
+    if (_syncTime != null && _lastMeasuredTapTime != null && measuredTaps > 0) {
+      final int elapsedMs = _lastMeasuredTapTime!.difference(_syncTime!).inMilliseconds;
+      final double totalBeats = _selectedPattern.intervals.fold(0.0, (double s, double v) => s + v);
+      final double beatsPerTap = totalBeats / _selectedPattern.intervals.length;
+      _sessionAvgBpm = measuredTaps * beatsPerTap * 60000.0 / elapsedMs;
+    } else {
+      _sessionAvgBpm = null;
+    }
     _syncTime = null;
     _lastMeasuredTapTime = null;
     _lastMeasuredExpectedMs = 0;
@@ -299,7 +323,7 @@ class _MetronomePageState extends State<MetronomePage>
       _lastMeasuredTapTime = now;
       _lastMeasuredExpectedMs = 0;
       _patternIndexNotifier.value = 0;
-      _deviationState.value = (isWarmingUp: true, ratio: null, bpm: null, deviationMs: null);
+      _deviationState.value = (isWarmingUp: true, isTooFast: false, ratio: null, bpm: null, deviationMs: null);
       _startPatternClock();
     } else if (_syncTime != null && _lastMeasuredTapTime != null) {
       // 絶対時間でどの拍かを特定 → 1拍押し損ねても位置を見失わない
@@ -309,8 +333,16 @@ class _MetronomePageState extends State<MetronomePage>
       // 偏差は「前回タップからの実IOI」で測る → リズム感を反映
       final int actualIoi = now.difference(_lastMeasuredTapTime!).inMilliseconds;
       final int expectedIoi = nearest.expectedMs - _lastMeasuredExpectedMs;
+
+      // 同じ拍への二重スナップは無効タップ
+      if (expectedIoi <= 0) {
+        _deviationState.value = (isWarmingUp: false, isTooFast: true, ratio: null, bpm: null, deviationMs: null);
+        _tapCount++;
+        return;
+      }
+
       final int deviationMs = actualIoi - expectedIoi;
-      final double ratio = expectedIoi > 0 ? deviationMs / expectedIoi : 0.0;
+      final double ratio = deviationMs / expectedIoi;
       final double bpmDeviation =
           60000.0 / actualIoi - 60000.0 / expectedIoi;
 
@@ -322,6 +354,7 @@ class _MetronomePageState extends State<MetronomePage>
         _tapDeviationLog.add((ratio: ratio, bpm: bpmDeviation, ms: deviationMs));
         _deviationState.value = (
           isWarmingUp: false,
+          isTooFast: false,
           ratio: ratio,
           bpm: bpmDeviation,
           deviationMs: deviationMs,
@@ -408,8 +441,9 @@ class _MetronomePageState extends State<MetronomePage>
     final int nRed = total - nGreen - nOrange;
     String pct(int n) => '${(n / total * 100).round()}%';
 
-    final double avgBpm = _bpm + log.fold(0.0, (s, e) => s + e.bpm) / total;
+    final double avgBpm = _sessionAvgBpm ?? _bpm.toDouble();
     final double avgMs = log.fold(0.0, (s, e) => s + e.ms) / total;
+    final double avgAbsMs = log.fold(0.0, (s, e) => s + e.ms.abs()) / total;
 
     Color devColor(double r) => r.abs() < 0.05
         ? Colors.green.shade600
@@ -477,22 +511,17 @@ class _MetronomePageState extends State<MetronomePage>
                 Padding(
                   padding: const EdgeInsets.only(right: 16),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: <Widget>[
-                      Text('平均 BPM', style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
-                      Text(
-                        avgBpm.toStringAsFixed(1),
-                        style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(width: 24),
-                      Text('平均ズレ', style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
-                      Text(
-                        '${avgMs >= 0 ? '+' : ''}${avgMs.toStringAsFixed(1)}ms',
-                        style: tt.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: avgMs.abs() < 20 ? Colors.green.shade600 : Colors.orange.shade700,
-                        ),
-                      ),
+                      _SummaryCell(label: '平均BPM', value: avgBpm.toStringAsFixed(1),
+                          color: cs.onSurface),
+                      const SizedBox(width: 12),
+                      _SummaryCell(label: '傾向',
+                          value: '${avgMs >= 0 ? '+' : ''}${avgMs.toStringAsFixed(1)}ms',
+                          color: avgMs.abs() < 20 ? Colors.green.shade600 : Colors.orange.shade700),
+                      const SizedBox(width: 12),
+                      _SummaryCell(label: '誤差',
+                          value: '${avgAbsMs.toStringAsFixed(1)}ms',
+                          color: avgAbsMs < 20 ? Colors.green.shade600 : Colors.orange.shade700),
                     ],
                   ),
                 ),
@@ -562,6 +591,7 @@ class _MetronomePageState extends State<MetronomePage>
     _needleController.dispose();
     _flashController?.dispose();
     _rippleDriverController.dispose();
+    _patternProgressController.dispose();
     _bpmTextController.dispose();
     _deviationState.dispose();
     _patternTimer?.cancel();
@@ -667,12 +697,16 @@ class _MetronomePageState extends State<MetronomePage>
                 if (_selectedPattern.id != 'quarter')
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
-                    child: ValueListenableBuilder<int>(
-                      valueListenable: _patternIndexNotifier,
-                      builder: (BuildContext context, int index, _) {
+                    child: AnimatedBuilder(
+                      animation: Listenable.merge(<Listenable>[
+                        _patternProgressController,
+                        _patternIndexNotifier,
+                      ]),
+                      builder: (BuildContext context, Widget? _) {
                         return _PatternVisualizer(
                           intervals: _selectedPattern.intervals,
-                          currentIndex: index,
+                          currentIndex: _patternIndexNotifier.value,
+                          progress: _patternProgressController.value,
                           isPlaying: _isPlaying,
                         );
                       },
@@ -687,30 +721,64 @@ class _MetronomePageState extends State<MetronomePage>
                     alignment: Alignment.center,
                     children: <Widget>[
                       Listener(
-                        onPointerDown: (_) => _onCircleTap(),
+                        onPointerDown: (_) {
+                          setState(() => _isTapping = true);
+                          _onCircleTap();
+                        },
+                        onPointerUp: (_) => setState(() => _isTapping = false),
+                        onPointerCancel: (_) => setState(() => _isTapping = false),
                         behavior: HitTestBehavior.opaque,
                         child: Container(
                           width: 168,
                           height: 168,
                           color: Colors.transparent,
                           child: Center(
-                            child: AnimatedBuilder(
-                              animation: _flashController ?? _needleController,
-                              builder: (BuildContext context, Widget? _) {
-                                final Color color = Color.lerp(
-                                  Theme.of(context).colorScheme.primaryContainer,
-                                  Theme.of(context).colorScheme.primary,
-                                  _flashController?.value ?? 0.0,
-                                )!;
-                                return Container(
-                                  width: 120,
-                                  height: 120,
-                                  decoration: BoxDecoration(
-                                    color: color,
-                                    shape: BoxShape.circle,
-                                  ),
-                                );
-                              },
+                            child: AnimatedScale(
+                              scale: _isTapping ? 0.88 : 1.0,
+                              duration: const Duration(milliseconds: 80),
+                              curve: Curves.easeOut,
+                              child: AnimatedBuilder(
+                                animation: _flashController ?? _needleController,
+                                builder: (BuildContext context, Widget? _) {
+                                  final ColorScheme cs = Theme.of(context).colorScheme;
+                                  final Color color = Color.lerp(
+                                    cs.primaryContainer,
+                                    cs.primary,
+                                    _flashController?.value ?? 0.0,
+                                  )!;
+                                  final Color iconColor = Color.lerp(
+                                    cs.onPrimaryContainer,
+                                    cs.onPrimary,
+                                    _flashController?.value ?? 0.0,
+                                  )!.withOpacity(0.55);
+                                  return Container(
+                                    width: 120,
+                                    height: 120,
+                                    decoration: BoxDecoration(
+                                      color: color,
+                                      shape: BoxShape.circle,
+                                      boxShadow: <BoxShadow>[
+                                        BoxShadow(
+                                          color: cs.primary.withOpacity(0.40),
+                                          blurRadius: _isTapping ? 4 : 18,
+                                          spreadRadius: _isTapping ? 0 : 2,
+                                          offset: Offset(0, _isTapping ? 1 : 5),
+                                        ),
+                                      ],
+                                    ),
+                                    child: (_isPlaying && _syncTime == null)
+                                        ? Transform.translate(
+                                            offset: const Offset(0, 22),
+                                            child: Icon(
+                                              Icons.pan_tool_alt,
+                                              color: iconColor,
+                                              size: 38,
+                                            ),
+                                          )
+                                        : null,
+                                  );
+                                },
+                              ),
                             ),
                           ),
                         ),
@@ -804,7 +872,7 @@ class _MetronomePageState extends State<MetronomePage>
                 ValueListenableBuilder(
                   valueListenable: _deviationState,
                   builder: (BuildContext context,
-                      ({bool isWarmingUp, double? ratio, double? bpm, int? deviationMs}) state, _) {
+                      ({bool isWarmingUp, bool isTooFast, double? ratio, double? bpm, int? deviationMs}) state, _) {
                     if (!_isPlaying) return const SizedBox.shrink();
                     if (state.isWarmingUp) {
                       return Text(
@@ -812,6 +880,14 @@ class _MetronomePageState extends State<MetronomePage>
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
                               color: Colors.grey,
                             ),
+                      );
+                    }
+                    if (state.isTooFast) {
+                      return Text(
+                        'Too fast!',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          color: Colors.orange,
+                        ),
                       );
                     }
                     final double? r = state.ratio;
@@ -905,11 +981,13 @@ class _PatternVisualizer extends StatelessWidget {
   const _PatternVisualizer({
     required this.intervals,
     required this.currentIndex,
+    required this.progress,
     required this.isPlaying,
   });
 
   final List<double> intervals;
   final int currentIndex;
+  final double progress;
   final bool isPlaying;
 
   @override
@@ -919,18 +997,55 @@ class _PatternVisualizer extends StatelessWidget {
       height: 32,
       child: Row(
         children: List<Widget>.generate(intervals.length, (int i) {
+          final bool isPast = isPlaying && i < currentIndex;
           final bool isCurrent = isPlaying && i == currentIndex;
           return Expanded(
             flex: (intervals[i] * 100).round(),
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 2),
-              decoration: BoxDecoration(
-                color: isCurrent ? cs.primary : cs.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(4),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: Stack(
+                children: <Widget>[
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 2),
+                    color: isPast
+                        ? cs.primary.withOpacity(0.35)
+                        : cs.surfaceContainerHighest,
+                  ),
+                  if (isCurrent)
+                    FractionallySizedBox(
+                      widthFactor: progress,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 2),
+                        color: cs.primary,
+                      ),
+                    ),
+                ],
               ),
             ),
           );
         }),
+      ),
+    );
+  }
+}
+
+class _SummaryCell extends StatelessWidget {
+  const _SummaryCell({required this.label, required this.value, required this.color});
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme tt = Theme.of(context).textTheme;
+    final ColorScheme cs = Theme.of(context).colorScheme;
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(label, style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+          Text(value, style: tt.bodyMedium?.copyWith(fontWeight: FontWeight.w600, color: color)),
+        ],
       ),
     );
   }
