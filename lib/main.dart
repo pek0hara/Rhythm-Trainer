@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 enum VisualMode { metronome, wave, flash }
 
@@ -19,6 +21,22 @@ class RhythmPattern {
   final String name;
   final List<double> intervals; // 拍単位。合計 = 1小節
   final bool isPreset;
+}
+
+class Bookmark {
+  Bookmark({required this.title, required this.bpm, this.url = ''});
+
+  final String title;
+  final int bpm;
+  final String url;
+
+  Map<String, dynamic> toJson() => {'title': title, 'bpm': bpm, 'url': url};
+
+  factory Bookmark.fromJson(Map<String, dynamic> json) => Bookmark(
+        title: json['title'] as String,
+        bpm: json['bpm'] as int,
+        url: (json['url'] as String?) ?? '',
+      );
 }
 
 const List<RhythmPattern> kRhythmPresets = <RhythmPattern>[
@@ -103,6 +121,8 @@ class _MetronomePageState extends State<MetronomePage>
       ValueNotifier((isWarmingUp: false, isTooFast: false, ratio: null, bpm: null, deviationMs: null));
   final List<({double ratio, double bpm, int ms})> _tapDeviationLog = [];
 
+  List<Bookmark> _bookmarks = [];
+
   @override
   void initState() {
     super.initState();
@@ -129,6 +149,7 @@ class _MetronomePageState extends State<MetronomePage>
       CurvedAnimation(parent: _needleController, curve: Curves.easeInOut),
     );
     _initClickSound();
+    _loadBookmarks();
   }
 
   Future<void> _initClickSound() async {
@@ -389,6 +410,193 @@ class _MetronomePageState extends State<MetronomePage>
     }
   }
 
+  Future<void> _loadBookmarks() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final List<String> list = prefs.getStringList('bookmarks') ?? [];
+    if (mounted) {
+      setState(() {
+        _bookmarks = list
+            .map((String s) =>
+                Bookmark.fromJson(jsonDecode(s) as Map<String, dynamic>))
+            .toList();
+      });
+    }
+  }
+
+  Future<void> _saveBookmarks() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      'bookmarks',
+      _bookmarks.map((Bookmark b) => jsonEncode(b.toJson())).toList(),
+    );
+  }
+
+  void _showSaveBookmarkDialog(BuildContext context) {
+    final TextEditingController titleController = TextEditingController();
+    final TextEditingController urlController = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          title: const Text('ブックマークに保存'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('BPM: $_bpm',
+                  style: Theme.of(ctx).textTheme.titleLarge),
+              const SizedBox(height: 16),
+              TextField(
+                controller: titleController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'タイトル',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: urlController,
+                decoration: const InputDecoration(
+                  labelText: 'URL（任意）',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.url,
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final String title = titleController.text.trim();
+                if (title.isEmpty) return;
+                setState(() {
+                  _bookmarks.add(Bookmark(
+                    title: title,
+                    bpm: _bpm,
+                    url: urlController.text.trim(),
+                  ));
+                });
+                _saveBookmarks();
+                Navigator.of(ctx).pop();
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showBookmarkSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (BuildContext ctx) {
+        return StatefulBuilder(
+          builder: (BuildContext ctx, StateSetter setSheetState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text('ブックマーク',
+                        style: Theme.of(ctx).textTheme.titleMedium),
+                    const SizedBox(height: 16),
+                    if (_bookmarks.isEmpty)
+                      const Center(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 24),
+                          child: Text('ブックマークはまだありません'),
+                        ),
+                      )
+                    else
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.of(ctx).size.height * 0.5,
+                        ),
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: _bookmarks.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1),
+                          itemBuilder: (_, int i) {
+                            final Bookmark b = _bookmarks[i];
+                            return ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(b.title),
+                              subtitle: b.url.isNotEmpty
+                                  ? Text(
+                                      b.url,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(ctx)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                              color: Theme.of(ctx)
+                                                  .colorScheme
+                                                  .primary),
+                                    )
+                                  : null,
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: <Widget>[
+                                  Text('${b.bpm} BPM',
+                                      style: Theme.of(ctx)
+                                          .textTheme
+                                          .titleMedium),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    tooltip: '削除',
+                                    onPressed: () {
+                                      setSheetState(() {
+                                        setState(
+                                            () => _bookmarks.removeAt(i));
+                                      });
+                                      _saveBookmarks();
+                                    },
+                                  ),
+                                ],
+                              ),
+                              onTap: () {
+                                setState(() {
+                                  _bpm = b.bpm;
+                                  _bpmTextController.text =
+                                      b.bpm.toString();
+                                });
+                                Navigator.of(ctx).pop();
+                              },
+                              onLongPress: b.url.isNotEmpty
+                                  ? () {
+                                      Clipboard.setData(
+                                          ClipboardData(text: b.url));
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(const SnackBar(
+                                              content:
+                                                  Text('URLをコピーしました')));
+                                    }
+                                  : null,
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showPatternSheet(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
@@ -618,6 +826,11 @@ class _MetronomePageState extends State<MetronomePage>
                       ),
                     ),
                     IconButton(
+                      icon: const Icon(Icons.bookmarks_outlined),
+                      tooltip: 'ブックマーク一覧',
+                      onPressed: () => _showBookmarkSheet(context),
+                    ),
+                    IconButton(
                       icon: const Icon(Icons.queue_music),
                       tooltip: 'リズムパターン',
                       onPressed: _isPlaying ? null : () => _showPatternSheet(context),
@@ -677,6 +890,14 @@ class _MetronomePageState extends State<MetronomePage>
                     const SizedBox(width: 8),
                     Text('BPM',
                         style: Theme.of(context).textTheme.headlineMedium),
+                    const SizedBox(width: 4),
+                    IconButton(
+                      icon: const Icon(Icons.bookmark_add_outlined),
+                      tooltip: 'ブックマークに保存',
+                      onPressed: _isPlaying
+                          ? null
+                          : () => _showSaveBookmarkDialog(context),
+                    ),
                   ],
                 ),
                 Slider(
