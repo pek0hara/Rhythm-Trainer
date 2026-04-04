@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 enum VisualMode { metronome, wave, flash }
 
@@ -532,17 +533,28 @@ class _MetronomePageState extends State<MetronomePage>
                               contentPadding: EdgeInsets.zero,
                               title: Text(b.title),
                               subtitle: b.url.isNotEmpty
-                                  ? Text(
-                                      b.url,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: Theme.of(ctx)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                              color: Theme.of(ctx)
-                                                  .colorScheme
-                                                  .primary),
+                                  ? GestureDetector(
+                                      onTap: () async {
+                                        final Uri uri = Uri.parse(b.url);
+                                        if (await canLaunchUrl(uri)) {
+                                          await launchUrl(uri,
+                                              mode: LaunchMode.externalApplication);
+                                        }
+                                      },
+                                      child: Text(
+                                        b.url,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(ctx)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                                color: Theme.of(ctx)
+                                                    .colorScheme
+                                                    .primary,
+                                                decoration:
+                                                    TextDecoration.underline),
+                                      ),
                                     )
                                   : null,
                               trailing: Row(
@@ -552,6 +564,18 @@ class _MetronomePageState extends State<MetronomePage>
                                       style: Theme.of(ctx)
                                           .textTheme
                                           .titleMedium),
+                                  if (b.url.isNotEmpty)
+                                    IconButton(
+                                      icon: const Icon(Icons.open_in_new),
+                                      tooltip: 'URLを開く',
+                                      onPressed: () async {
+                                        final Uri uri = Uri.parse(b.url);
+                                        if (await canLaunchUrl(uri)) {
+                                          await launchUrl(uri,
+                                              mode: LaunchMode.externalApplication);
+                                        }
+                                      },
+                                    ),
                                   IconButton(
                                     icon: const Icon(Icons.delete_outline),
                                     tooltip: '削除',
@@ -573,16 +597,6 @@ class _MetronomePageState extends State<MetronomePage>
                                 });
                                 Navigator.of(ctx).pop();
                               },
-                              onLongPress: b.url.isNotEmpty
-                                  ? () {
-                                      Clipboard.setData(
-                                          ClipboardData(text: b.url));
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(const SnackBar(
-                                              content:
-                                                  Text('URLをコピーしました')));
-                                    }
-                                  : null,
                             );
                           },
                         ),
