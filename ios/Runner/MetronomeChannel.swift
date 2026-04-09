@@ -8,7 +8,9 @@ class MetronomeChannel {
 
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let tapPlayerNode = AVAudioPlayerNode()
     private var clickBuffer: AVAudioPCMBuffer?
+    private var tapBuffer: AVAudioPCMBuffer?
     private var dispatchTimer: DispatchSourceTimer?
     private let timerQueue = DispatchQueue(label: "com.rhythmtrainer.metronome", qos: .userInteractive)
     private let audioSetupQueue = DispatchQueue(label: "com.rhythmtrainer.setup", qos: .userInitiated)
@@ -28,14 +30,22 @@ class MetronomeChannel {
 
     private func setupEngine() {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {}
 
         engine.attach(playerNode)
+        engine.attach(tapPlayerNode)
         let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
         engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+        engine.connect(tapPlayerNode, to: engine.mainMixerNode, format: format)
         try? engine.start()
+        // prime the audio graph to avoid noise on first playback
+        if let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512) {
+            silence.frameLength = 512
+            playerNode.play()
+            playerNode.scheduleBuffer(silence)
+        }
     }
 
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -49,6 +59,21 @@ class MetronomeChannel {
             } else {
                 result(nil)
             }
+        case "prepareTapSound":
+            if let typedData = call.arguments as? FlutterStandardTypedData {
+                audioSetupQueue.async {
+                    self.prepareTapSound(data: typedData.data)
+                    DispatchQueue.main.async { result(nil) }
+                }
+            } else {
+                result(nil)
+            }
+        case "playTapSound":
+            playTap()
+            result(nil)
+        case "clearTapSound":
+            tapBuffer = nil
+            result(nil)
         case "start":
             if let bpm = call.arguments as? Double {
                 start(bpm: bpm)
@@ -73,6 +98,23 @@ class MetronomeChannel {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCount) else { return }
         try? audioFile.read(into: buffer)
         clickBuffer = buffer
+    }
+
+    private func prepareTapSound(data: Data) {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("tap_native.wav")
+        try? data.write(to: url)
+        guard let audioFile = try? AVAudioFile(forReading: url) else { return }
+        let frameCount = AVAudioFrameCount(audioFile.length)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCount) else { return }
+        try? audioFile.read(into: buffer)
+        tapBuffer = buffer
+    }
+
+    private func playTap() {
+        guard let buffer = tapBuffer else { return }
+        if !engine.isRunning { try? engine.start() }
+        tapPlayerNode.scheduleBuffer(buffer)
+        if !tapPlayerNode.isPlaying { tapPlayerNode.play() }
     }
 
     private func start(bpm: Double) {

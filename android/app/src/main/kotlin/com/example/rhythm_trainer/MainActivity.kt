@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
 
     private val sampleRate = 44100
     private var clickTrack: AudioTrack? = null
+    private var tapTrack: AudioTrack? = null
 
     private var eventSink: EventChannel.EventSink? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -44,6 +45,26 @@ class MainActivity : FlutterActivity() {
                         } else {
                             result.success(null)
                         }
+                    }
+                    "prepareTapSound" -> {
+                        val wavBytes = call.arguments as? ByteArray
+                        if (wavBytes != null) {
+                            Thread {
+                                prepareTapTrack(wavBytes)
+                                mainHandler.post { result.success(null) }
+                            }.start()
+                        } else {
+                            result.success(null)
+                        }
+                    }
+                    "playTapSound" -> {
+                        playTap()
+                        result.success(null)
+                    }
+                    "clearTapSound" -> {
+                        tapTrack?.release()
+                        tapTrack = null
+                        result.success(null)
                     }
                     "start" -> {
                         val bpm = call.arguments as? Double
@@ -144,6 +165,50 @@ class MainActivity : FlutterActivity() {
         metronomeThread = null
     }
 
+    private fun prepareTapTrack(wav: ByteArray) {
+        val dataOffset = 44
+        val remaining = wav.size - dataOffset
+        val samples = ShortArray(remaining / 2)
+        ByteBuffer.wrap(wav, dataOffset, remaining)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .asShortBuffer()
+            .get(samples)
+
+        val minBuf = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(maxOf(minBuf, samples.size * 2))
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+
+        track.write(samples, 0, samples.size)
+        tapTrack?.release()
+        tapTrack = track
+    }
+
+    private fun playTap() {
+        val track = tapTrack ?: return
+        track.stop()
+        track.reloadStaticData()
+        track.play()
+    }
+
     private fun playClick() {
         if (isMuted) return
         val track = clickTrack ?: return
@@ -156,6 +221,8 @@ class MainActivity : FlutterActivity() {
         stopMetronome()
         clickTrack?.release()
         clickTrack = null
+        tapTrack?.release()
+        tapTrack = null
         super.onDestroy()
     }
 }

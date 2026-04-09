@@ -1,12 +1,24 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-enum VisualMode { metronome, wave, flash }
+enum VisualMode { metronome, wave, blind }
+
+enum TapSound { none, snare }
+
+extension TapSoundLabel on TapSound {
+  String get label => switch (this) {
+    TapSound.none  => 'なし',
+    TapSound.snare => 'スネア',
+  };
+}
 
 class RhythmPattern {
   const RhythmPattern({
@@ -27,6 +39,38 @@ const List<RhythmPattern> kRhythmPresets = <RhythmPattern>[
   RhythmPattern(id: 'preset_b', name: '定番B', intervals: <double>[1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], isPreset: true),
   RhythmPattern(id: 'preset_c', name: '定番C', intervals: <double>[1, 0.5, 1, 0.5, 0.5, 0.5], isPreset: true),
 ];
+
+class Bookmark {
+  Bookmark({
+    required this.id,
+    required this.title,
+    required this.bpm,
+    this.url = '',
+    required this.createdAt,
+  });
+
+  factory Bookmark.fromJson(Map<String, dynamic> json) => Bookmark(
+        id: json['id'] as String,
+        title: json['title'] as String,
+        bpm: json['bpm'] as int,
+        url: (json['url'] as String?) ?? '',
+        createdAt: DateTime.parse(json['createdAt'] as String),
+      );
+
+  final String id;
+  final String title;
+  final int bpm;
+  final String url;
+  final DateTime createdAt;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'title': title,
+        'bpm': bpm,
+        'url': url,
+        'createdAt': createdAt.toIso8601String(),
+      };
+}
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -74,6 +118,7 @@ class _MetronomePageState extends State<MetronomePage>
   VisualMode _visualMode = VisualMode.metronome;
   bool _soundEnabled = true;
   bool _isTapping = false;
+  TapSound _tapSound = TapSound.snare;
 
   final TextEditingController _bpmTextController =
       TextEditingController(text: '100');
@@ -98,10 +143,17 @@ class _MetronomePageState extends State<MetronomePage>
   DateTime? _lastMeasuredTapTime;
   int _lastMeasuredExpectedMs = 0;
   double? _sessionAvgBpm;
+
+  // 非再生時のタップBPM計測
+  final List<DateTime> _idleTapTimes = [];
+  Timer? _idleTapResetTimer;
   final ValueNotifier<({bool isWarmingUp, bool isTooFast, double? ratio, double? bpm, int? deviationMs})>
       _deviationState =
       ValueNotifier((isWarmingUp: false, isTooFast: false, ratio: null, bpm: null, deviationMs: null));
   final List<({double ratio, double bpm, int ms})> _tapDeviationLog = [];
+
+  List<Bookmark> _bookmarks = [];
+  Bookmark? _activeBookmark;
 
   @override
   void initState() {
@@ -129,6 +181,124 @@ class _MetronomePageState extends State<MetronomePage>
       CurvedAnimation(parent: _needleController, curve: Curves.easeInOut),
     );
     _initClickSound();
+    _loadSettings();
+    _loadBookmarks();
+  }
+
+  Future<void> _loadSettings() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _bpm = (prefs.getInt('settings_bpm') ?? _bpm).clamp(40, 240);
+      _bpmTextController.text = _bpm.toString();
+      final int vmIdx = prefs.getInt('settings_visualMode') ?? _visualMode.index;
+      _visualMode = VisualMode.values[vmIdx.clamp(0, VisualMode.values.length - 1)];
+      _soundEnabled = prefs.getBool('settings_soundEnabled') ?? _soundEnabled;
+      final int tsIdx = prefs.getInt('settings_tapSound') ?? _tapSound.index;
+      _tapSound = TapSound.values[tsIdx.clamp(0, TapSound.values.length - 1)];
+      final String patId = prefs.getString('settings_selectedPatternId') ?? _selectedPattern.id;
+      _selectedPattern = kRhythmPresets.firstWhere(
+        (RhythmPattern p) => p.id == patId,
+        orElse: () => kRhythmPresets.first,
+      );
+    });
+    if (!kIsWeb) {
+      await _methodChannel.invokeMethod<void>('setMuted', !_soundEnabled);
+      if (_tapSound == TapSound.none) {
+        await _methodChannel.invokeMethod<void>('clearTapSound');
+      } else {
+        final Uint8List wav = _buildDrumWav(_tapSound);
+        await _methodChannel.invokeMethod<void>('prepareTapSound', wav);
+      }
+    }
+  }
+
+  Future<void> _saveSettings() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await Future.wait(<Future<void>>[
+      prefs.setInt('settings_bpm', _bpm),
+      prefs.setInt('settings_visualMode', _visualMode.index),
+      prefs.setBool('settings_soundEnabled', _soundEnabled),
+      prefs.setInt('settings_tapSound', _tapSound.index),
+      prefs.setString('settings_selectedPatternId', _selectedPattern.id),
+    ]);
+  }
+
+  Future<void> _loadBookmarks() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String? data = prefs.getString('bookmarks');
+    if (data != null) {
+      final List<dynamic> list = jsonDecode(data) as List<dynamic>;
+      if (mounted) {
+        setState(() {
+          _bookmarks = list
+              .map((dynamic e) => Bookmark.fromJson(e as Map<String, dynamic>))
+              .toList();
+        });
+      }
+    }
+  }
+
+  Future<void> _saveBookmarks() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'bookmarks',
+      jsonEncode(_bookmarks.map((Bookmark b) => b.toJson()).toList()),
+    );
+  }
+
+  Future<void> _showBookmarkSaveDialog(BuildContext context) async {
+    final ({String title, int bpm, String url, bool deleted})? result =
+        await showDialog<({String title, int bpm, String url, bool deleted})>(
+      context: context,
+      builder: (_) => _BookmarkSaveDialog(initialBpm: _bpm),
+    );
+    if (result == null || result.deleted) return;
+    final Bookmark bookmark = Bookmark(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      title: result.title,
+      bpm: result.bpm,
+      url: result.url,
+      createdAt: DateTime.now(),
+    );
+    setState(() => _bookmarks.add(bookmark));
+    _saveBookmarks();
+  }
+
+  Future<void> _showBookmarksSheet(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (BuildContext ctx) => _BookmarksSheetContent(
+        bookmarks: _bookmarks,
+        onLoad: (Bookmark b) {
+          setState(() {
+            _bpm = b.bpm;
+            _bpmTextController.text = b.bpm.toString();
+            _activeBookmark = b;
+          });
+          Navigator.pop(ctx);
+        },
+        onEdit: (int index, Bookmark updated) {
+          setState(() {
+            _bookmarks[index] = updated;
+            if (_activeBookmark?.id == updated.id) {
+              _activeBookmark = updated;
+            }
+          });
+          _saveBookmarks();
+        },
+        onDelete: (int index, String bookmarkId) {
+          setState(() {
+            if (_activeBookmark?.id == bookmarkId) {
+              _activeBookmark = null;
+            }
+            _bookmarks.removeAt(index);
+          });
+          _saveBookmarks();
+        },
+      ),
+    );
   }
 
   Future<void> _initClickSound() async {
@@ -193,6 +363,72 @@ class _MetronomePageState extends State<MetronomePage>
     return bytes.buffer.asUint8List();
   }
 
+  /// PCM サンプル列([-1.0, 1.0])から WAV バイト列を生成する共通ヘルパー
+  Uint8List _samplesToWav(List<double> samples, {int sampleRate = 44100}) {
+    final int dataSize = samples.length * 2;
+    final ByteData bytes = ByteData(44 + dataSize);
+    void writeAscii(int offset, String v) {
+      for (int i = 0; i < v.length; i++) { bytes.setUint8(offset + i, v.codeUnitAt(i)); }
+    }
+    writeAscii(0, 'RIFF');
+    bytes.setUint32(4, 36 + dataSize, Endian.little);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    bytes.setUint32(16, 16, Endian.little);
+    bytes.setUint16(20, 1, Endian.little);
+    bytes.setUint16(22, 1, Endian.little);
+    bytes.setUint32(24, sampleRate, Endian.little);
+    bytes.setUint32(28, sampleRate * 2, Endian.little);
+    bytes.setUint16(32, 2, Endian.little);
+    bytes.setUint16(34, 16, Endian.little);
+    writeAscii(36, 'data');
+    bytes.setUint32(40, dataSize, Endian.little);
+    for (int i = 0; i < samples.length; i++) {
+      final int v = (samples[i].clamp(-1.0, 1.0) * 32767).round().clamp(-32768, 32767);
+      bytes.setInt16(44 + i * 2, v, Endian.little);
+    }
+    return bytes.buffer.asUint8List();
+  }
+
+  Uint8List _buildDrumWav(TapSound sound) {
+    const int sr = 44100;
+    switch (sound) {
+      case TapSound.snare:
+        // ホワイトノイズ + 低音サイン波 + 指数減衰
+        const int n2 = 5292; // 120ms @ 44100Hz
+        final List<double> s2 = List<double>.filled(n2, 0);
+        final math.Random rng = math.Random(42);
+        for (int i = 0; i < n2; i++) {
+          final double prog = i / n2;
+          final double t = i / sr;
+          final double env = math.exp(-prog * 10);
+          final double noise = (rng.nextDouble() * 2 - 1) * 0.55;
+          final double tone = math.sin(2 * math.pi * 180 * t) * 0.25;
+          s2[i] = (noise + tone) * env;
+        }
+        return _samplesToWav(s2);
+      case TapSound.none:
+        return Uint8List(0);
+    }
+  }
+
+  Future<void> _setTapSound(TapSound sound) async {
+    setState(() => _tapSound = sound);
+    unawaited(_saveSettings());
+    if (kIsWeb) return;
+    if (sound == TapSound.none) {
+      await _methodChannel.invokeMethod<void>('clearTapSound');
+    } else {
+      final Uint8List wav = _buildDrumWav(sound);
+      await _methodChannel.invokeMethod<void>('prepareTapSound', wav);
+    }
+  }
+
+  void _playTapSound() {
+    if (_tapSound == TapSound.none || kIsWeb) return;
+    unawaited(_methodChannel.invokeMethod<void>('playTapSound'));
+  }
+
   Future<void> _startNative() async {
     await _methodChannel.invokeMethod<void>('start', _bpm.toDouble());
   }
@@ -244,11 +480,15 @@ class _MetronomePageState extends State<MetronomePage>
     unawaited(_startNative());
 
     _beatSubscription = _eventChannel.receiveBroadcastStream().listen((_) {
-      if (_visualMode == VisualMode.flash) {
-        _flashController?.forward(from: 0);
+      if (_visualMode == VisualMode.blind) {
+        // ブラインドモード: 視覚フィードバックなし
       }
       if (_visualMode == VisualMode.wave) {
-        _rippleStartTimes.add(DateTime.now());
+        final DateTime now = DateTime.now();
+        _rippleStartTimes.removeWhere(
+          (DateTime t) => now.difference(t) > _beatDuration * 2,
+        );
+        _rippleStartTimes.add(now);
       }
     });
   }
@@ -312,8 +552,49 @@ class _MetronomePageState extends State<MetronomePage>
     return (expectedMs: bestT.round(), intervalMs: bestIntervalMs);
   }
 
+  void _onIdleTap() {
+    final DateTime now = DateTime.now();
+
+    // 前回タップから2秒以上経過していたらリセット
+    if (_idleTapTimes.isNotEmpty &&
+        now.difference(_idleTapTimes.last).inMilliseconds > 2000) {
+      _idleTapTimes.clear();
+    }
+    _idleTapTimes.add(now);
+
+    // 最新の8タップだけ保持
+    if (_idleTapTimes.length > 8) {
+      _idleTapTimes.removeAt(0);
+    }
+
+    // 2タップ以降でBPM計算してフィールドに反映
+    if (_idleTapTimes.length >= 2) {
+      final int totalMs = _idleTapTimes.last
+          .difference(_idleTapTimes.first)
+          .inMilliseconds;
+      final double avgInterval = totalMs / (_idleTapTimes.length - 1);
+      final int bpm = (60000 / avgInterval).round().clamp(40, 240);
+      setState(() {
+        _bpm = bpm;
+        _bpmTextController.text = bpm.toString();
+      });
+      unawaited(_saveSettings());
+    }
+
+    // 2秒タップなしでリセット
+    _idleTapResetTimer?.cancel();
+    _idleTapResetTimer = Timer(const Duration(milliseconds: 2000), () {
+      setState(() => _idleTapTimes.clear());
+    });
+  }
+
   void _onCircleTap() {
-    if (!_isPlaying) return;
+    if (!_isPlaying) {
+      _playTapSound();
+      _onIdleTap();
+      return;
+    }
+    _playTapSound();
     final DateTime now = DateTime.now();
 
     if (_tapCount == 0) {
@@ -368,6 +649,7 @@ class _MetronomePageState extends State<MetronomePage>
     final int? parsed = int.tryParse(_bpmTextController.text);
     if (parsed != null && parsed >= 40 && parsed <= 240) {
       setState(() => _bpm = parsed);
+      unawaited(_saveSettings());
     } else {
       _bpmTextController.text = _bpm.toString();
     }
@@ -384,6 +666,7 @@ class _MetronomePageState extends State<MetronomePage>
   Future<void> _toggleSound() async {
     final bool next = !_soundEnabled;
     setState(() => _soundEnabled = next);
+    unawaited(_saveSettings());
     if (!kIsWeb) {
       await _methodChannel.invokeMethod<void>('setMuted', !next);
     }
@@ -418,6 +701,7 @@ class _MetronomePageState extends State<MetronomePage>
                             _lastMeasuredExpectedMs = 0;
                             _patternIndexNotifier.value = 0;
                           });
+                          unawaited(_saveSettings());
                           Navigator.of(ctx).pop();
                         },
                       ),
@@ -588,6 +872,7 @@ class _MetronomePageState extends State<MetronomePage>
   @override
   void dispose() {
     _beatSubscription?.cancel();
+    _idleTapResetTimer?.cancel();
     _needleController.dispose();
     _flashController?.dispose();
     _rippleDriverController.dispose();
@@ -618,6 +903,11 @@ class _MetronomePageState extends State<MetronomePage>
                       ),
                     ),
                     IconButton(
+                      icon: const Icon(Icons.bookmarks),
+                      tooltip: 'ブックマーク一覧',
+                      onPressed: () => _showBookmarksSheet(context),
+                    ),
+                    IconButton(
                       icon: const Icon(Icons.queue_music),
                       tooltip: 'リズムパターン',
                       onPressed: _isPlaying ? null : () => _showPatternSheet(context),
@@ -626,12 +916,12 @@ class _MetronomePageState extends State<MetronomePage>
                       icon: Icon(switch (_visualMode) {
                         VisualMode.metronome => Icons.straighten,
                         VisualMode.wave      => Icons.blur_on,
-                        VisualMode.flash     => Icons.flash_on,
+                        VisualMode.blind     => Icons.visibility_off,
                       }),
                       tooltip: switch (_visualMode) {
                         VisualMode.metronome => 'メトロノーム',
                         VisualMode.wave      => '波',
-                        VisualMode.flash     => '点滅',
+                        VisualMode.blind     => 'ブラインド',
                       },
                       onPressed: () {
                         setState(() {
@@ -642,12 +932,29 @@ class _MetronomePageState extends State<MetronomePage>
                           _flashController?.stop(canceled: true);
                           _flashController?.value = 0;
                         });
+                        unawaited(_saveSettings());
                       },
                     ),
                     IconButton(
                       icon: Icon(_soundEnabled ? Icons.volume_up : Icons.volume_off),
                       tooltip: _soundEnabled ? '音声オフ' : '音声オン',
                       onPressed: _isReady ? _toggleSound : null,
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _tapSound == TapSound.none
+                            ? Icons.music_off
+                            : Icons.music_note,
+                        color: _tapSound == TapSound.none
+                            ? null
+                            : Theme.of(context).colorScheme.primary,
+                      ),
+                      tooltip: 'タップ音',
+                      onPressed: () => _setTapSound(
+                        _tapSound == TapSound.none
+                            ? TapSound.snare
+                            : TapSound.none,
+                      ),
                     ),
                   ],
                 ),
@@ -677,6 +984,12 @@ class _MetronomePageState extends State<MetronomePage>
                     const SizedBox(width: 8),
                     Text('BPM',
                         style: Theme.of(context).textTheme.headlineMedium),
+                    const SizedBox(width: 4),
+                    IconButton(
+                      icon: const Icon(Icons.bookmark_add),
+                      tooltip: 'ブックマーク保存',
+                      onPressed: () => _showBookmarkSaveDialog(context),
+                    ),
                   ],
                 ),
                 Slider(
@@ -692,8 +1005,45 @@ class _MetronomePageState extends State<MetronomePage>
                             _bpm = value.round();
                             _bpmTextController.text = _bpm.toString();
                           });
+                          unawaited(_saveSettings());
                         },
                 ),
+                if (_activeBookmark != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+                    child: Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            _activeBookmark!.title,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (_activeBookmark!.url.isNotEmpty)
+                          IconButton(
+                            icon: const Icon(Icons.open_in_new, size: 18),
+                            tooltip: 'URLを開く',
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () async {
+                              final Uri? uri =
+                                  Uri.tryParse(_activeBookmark!.url);
+                              if (uri != null && await canLaunchUrl(uri)) {
+                                await launchUrl(uri,
+                                    mode: LaunchMode.externalApplication);
+                              }
+                            },
+                          ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 18),
+                          tooltip: 'クリア',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () =>
+                              setState(() => _activeBookmark = null),
+                        ),
+                      ],
+                    ),
+                  ),
                 if (_selectedPattern.id != 'quarter')
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
@@ -738,19 +1088,22 @@ class _MetronomePageState extends State<MetronomePage>
                               duration: const Duration(milliseconds: 80),
                               curve: Curves.easeOut,
                               child: AnimatedBuilder(
-                                animation: _flashController ?? _needleController,
+                                animation: (_visualMode != VisualMode.blind ? _flashController : null) ?? _needleController,
                                 builder: (BuildContext context, Widget? _) {
                                   final ColorScheme cs = Theme.of(context).colorScheme;
+                                  final double flashValue = _visualMode != VisualMode.blind
+                                      ? (_flashController?.value ?? 0.0)
+                                      : 0.0;
                                   final Color color = Color.lerp(
                                     cs.primaryContainer,
                                     cs.primary,
-                                    _flashController?.value ?? 0.0,
+                                    flashValue,
                                   )!;
                                   final Color iconColor = Color.lerp(
                                     cs.onPrimaryContainer,
                                     cs.onPrimary,
-                                    _flashController?.value ?? 0.0,
-                                  )!.withOpacity(0.55);
+                                    flashValue,
+                                  )!.withValues(alpha: 0.55);
                                   return Container(
                                     width: 120,
                                     height: 120,
@@ -759,7 +1112,7 @@ class _MetronomePageState extends State<MetronomePage>
                                       shape: BoxShape.circle,
                                       boxShadow: <BoxShadow>[
                                         BoxShadow(
-                                          color: cs.primary.withOpacity(0.40),
+                                          color: cs.primary.withValues(alpha: 0.40),
                                           blurRadius: _isTapping ? 4 : 18,
                                           spreadRadius: _isTapping ? 0 : 2,
                                           offset: Offset(0, _isTapping ? 1 : 5),
@@ -788,10 +1141,6 @@ class _MetronomePageState extends State<MetronomePage>
                           child: AnimatedBuilder(
                             animation: _rippleDriverController,
                             builder: (BuildContext context, Widget? _) {
-                              _rippleStartTimes.removeWhere(
-                                (DateTime t) =>
-                                    DateTime.now().difference(t) > _beatDuration * 2,
-                              );
                               return CustomPaint(
                                 size: const Size(220, 220),
                                 painter: _RipplePainter(
@@ -853,7 +1202,16 @@ class _MetronomePageState extends State<MetronomePage>
                     ],
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 8),
+                if (!_isPlaying && _idleTapTimes.length >= 2)
+                  Text(
+                    'タップ計測中 (${_idleTapTimes.length})',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                  )
+                else
+                  const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: _isReady ? _togglePlay : null,
                   icon: Icon(
@@ -1008,7 +1366,7 @@ class _PatternVisualizer extends StatelessWidget {
                   Container(
                     margin: const EdgeInsets.symmetric(horizontal: 2),
                     color: isPast
-                        ? cs.primary.withOpacity(0.35)
+                        ? cs.primary.withValues(alpha: 0.35)
                         : cs.surfaceContainerHighest,
                   ),
                   if (isCurrent)
@@ -1149,4 +1507,306 @@ class _RipplePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_RipplePainter oldDelegate) => true;
+}
+
+class _BookmarkSaveDialog extends StatefulWidget {
+  const _BookmarkSaveDialog({
+    required this.initialBpm,
+    this.initialTitle = '',
+    this.initialUrl = '',
+    this.dialogTitle = 'ブックマーク保存',
+    this.showDeleteButton = false,
+  });
+  final int initialBpm;
+  final String initialTitle;
+  final String initialUrl;
+  final String dialogTitle;
+  final bool showDeleteButton;
+
+  @override
+  State<_BookmarkSaveDialog> createState() => _BookmarkSaveDialogState();
+}
+
+class _BookmarkSaveDialogState extends State<_BookmarkSaveDialog> {
+  late final TextEditingController _titleCtrl;
+  late final TextEditingController _bpmCtrl;
+  late final TextEditingController _urlCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleCtrl = TextEditingController(text: widget.initialTitle);
+    _bpmCtrl = TextEditingController(text: widget.initialBpm.toString());
+    _urlCtrl = TextEditingController(text: widget.initialUrl);
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _bpmCtrl.dispose();
+    _urlCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.dialogTitle),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          TextField(
+            controller: _titleCtrl,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'タイトル *',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _bpmCtrl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'BPM',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _urlCtrl,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+              labelText: 'URL（任意）',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ],
+      ),
+      actionsAlignment: widget.showDeleteButton
+          ? MainAxisAlignment.spaceBetween
+          : null,
+      actions: <Widget>[
+        if (widget.showDeleteButton)
+          TextButton(
+            style: TextButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(
+              context,
+              (title: '', bpm: 0, url: '', deleted: true),
+            ),
+            child: const Text('削除'),
+          ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('キャンセル'),
+            ),
+        FilledButton(
+          onPressed: () {
+            final String title = _titleCtrl.text.trim();
+            if (title.isEmpty) return;
+            final int bpm =
+                (int.tryParse(_bpmCtrl.text) ?? widget.initialBpm)
+                    .clamp(40, 240);
+            Navigator.pop(
+              context,
+              (title: title, bpm: bpm, url: _urlCtrl.text.trim(), deleted: false),
+            );
+          },
+          child: const Text('保存'),
+        ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _BookmarksSheetContent extends StatefulWidget {
+  const _BookmarksSheetContent({
+    required this.bookmarks,
+    required this.onLoad,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final List<Bookmark> bookmarks;
+  final void Function(Bookmark) onLoad;
+  final void Function(int index, Bookmark updated) onEdit;
+  final void Function(int index, String bookmarkId) onDelete;
+
+  @override
+  State<_BookmarksSheetContent> createState() => _BookmarksSheetContentState();
+}
+
+class _BookmarksSheetContentState extends State<_BookmarksSheetContent> {
+  late final TextEditingController _searchCtrl;
+  late final FocusNode _searchFocusNode;
+  bool _isSearching = false;
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl = TextEditingController();
+    _searchFocusNode = FocusNode();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<({Bookmark bookmark, int index})> filtered = widget.bookmarks
+        .asMap()
+        .entries
+        .where((MapEntry<int, Bookmark> e) =>
+            _searchQuery.isEmpty ||
+            e.value.title
+                .toLowerCase()
+                .contains(_searchQuery.toLowerCase()))
+        .map((MapEntry<int, Bookmark> e) =>
+            (bookmark: e.value, index: e.key))
+        .toList();
+
+    return SafeArea(
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.6,
+        child: Column(
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Stack(
+                      alignment: Alignment.centerLeft,
+                      children: <Widget>[
+                        Offstage(
+                          offstage: _isSearching,
+                          child: Text(
+                            'ブックマーク',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                        ),
+                        Offstage(
+                          offstage: !_isSearching,
+                          child: TextField(
+                            controller: _searchCtrl,
+                            focusNode: _searchFocusNode,
+                            decoration: const InputDecoration(
+                              hintText: 'タイトルで検索...',
+                              border: InputBorder.none,
+                              isDense: true,
+                            ),
+                            onChanged: (String v) =>
+                                setState(() => _searchQuery = v),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!_isSearching)
+                    IconButton(
+                      icon: const Icon(Icons.search),
+                      tooltip: '検索',
+                      onPressed: () {
+                        setState(() => _isSearching = true);
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          _searchFocusNode.requestFocus();
+                        });
+                      },
+                    )
+                  else
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: '閉じる',
+                      onPressed: () {
+                        setState(() {
+                          _isSearching = false;
+                          _searchQuery = '';
+                          _searchCtrl.clear();
+                        });
+                        _searchFocusNode.unfocus();
+                      },
+                    ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            if (filtered.isEmpty)
+              const Expanded(
+                child: Center(
+                  child: Text('保存されたブックマークがありません'),
+                ),
+              )
+            else
+              Expanded(
+                child: ListView.builder(
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.manual,
+                  itemCount: filtered.length,
+                  itemBuilder: (BuildContext _, int fi) {
+                    final Bookmark b = filtered[fi].bookmark;
+                    final int i = filtered[fi].index;
+                    return ListTile(
+                      title: Text(b.title),
+                      subtitle: b.url.isEmpty
+                          ? null
+                          : Text(
+                              b.url,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                      trailing: Text(
+                        '${b.bpm} BPM',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      onTap: () => widget.onLoad(b),
+                      onLongPress: () async {
+                        final ({String title, int bpm, String url, bool deleted})? result =
+                            await showDialog<({String title, int bpm, String url, bool deleted})>(
+                          context: context,
+                          builder: (_) => _BookmarkSaveDialog(
+                            initialBpm: b.bpm,
+                            initialTitle: b.title,
+                            initialUrl: b.url,
+                            dialogTitle: 'ブックマーク編集',
+                            showDeleteButton: true,
+                          ),
+                        );
+                        if (result == null) return;
+                        if (result.deleted) {
+                          widget.onDelete(i, b.id);
+                        } else {
+                          widget.onEdit(
+                            i,
+                            Bookmark(
+                              id: b.id,
+                              title: result.title,
+                              bpm: result.bpm,
+                              url: result.url,
+                              createdAt: b.createdAt,
+                            ),
+                          );
+                        }
+                        setState(() {});
+                      },
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
