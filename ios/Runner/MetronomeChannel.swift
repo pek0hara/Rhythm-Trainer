@@ -10,11 +10,14 @@ class MetronomeChannel {
     private let playerNode = AVAudioPlayerNode()
     private let tapPlayerNode = AVAudioPlayerNode()
     private var clickBuffer: AVAudioPCMBuffer?
+    private var accentBuffer: AVAudioPCMBuffer?
     private var tapBuffer: AVAudioPCMBuffer?
     private var dispatchTimer: DispatchSourceTimer?
     private let timerQueue = DispatchQueue(label: "com.rhythmtrainer.metronome", qos: .userInteractive)
     private let audioSetupQueue = DispatchQueue(label: "com.rhythmtrainer.setup", qos: .userInitiated)
     private var isMuted = false
+    private var beatIndex = 0
+    private let beatsPerMeasure = 4
 
     init(messenger: FlutterBinaryMessenger) {
         methodChannel = FlutterMethodChannel(name: "com.rhythmtrainer.metronome/control", binaryMessenger: messenger)
@@ -54,6 +57,15 @@ class MetronomeChannel {
             if let typedData = call.arguments as? FlutterStandardTypedData {
                 audioSetupQueue.async {
                     self.prepareSound(data: typedData.data)
+                    DispatchQueue.main.async { result(nil) }
+                }
+            } else {
+                result(nil)
+            }
+        case "prepareAccent":
+            if let typedData = call.arguments as? FlutterStandardTypedData {
+                audioSetupQueue.async {
+                    self.prepareAccentSound(data: typedData.data)
                     DispatchQueue.main.async { result(nil) }
                 }
             } else {
@@ -110,6 +122,16 @@ class MetronomeChannel {
         tapBuffer = buffer
     }
 
+    private func prepareAccentSound(data: Data) {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("accent_native.wav")
+        try? data.write(to: url)
+        guard let audioFile = try? AVAudioFile(forReading: url) else { return }
+        let frameCount = AVAudioFrameCount(audioFile.length)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCount) else { return }
+        try? audioFile.read(into: buffer)
+        accentBuffer = buffer
+    }
+
     private func playTap() {
         guard let buffer = tapBuffer else { return }
         if !engine.isRunning { try? engine.start() }
@@ -119,6 +141,7 @@ class MetronomeChannel {
 
     private func start(bpm: Double) {
         stop()
+        beatIndex = 0
         let interval = 60.0 / bpm
         let t = DispatchSource.makeTimerSource(flags: .strict, queue: timerQueue)
         t.schedule(deadline: .now(), repeating: interval, leeway: .microseconds(500))
@@ -133,10 +156,13 @@ class MetronomeChannel {
     }
 
     private func playClick() {
-        guard !isMuted, let buffer = clickBuffer else { return }
+        guard !isMuted else { return }
+        let buffer = (beatIndex == 0 ? accentBuffer : nil) ?? clickBuffer
+        guard let buffer = buffer else { return }
         if !engine.isRunning { try? engine.start() }
         playerNode.scheduleBuffer(buffer)
         if !playerNode.isPlaying { playerNode.play() }
+        beatIndex = (beatIndex + 1) % beatsPerMeasure
     }
 
     private func stop() {

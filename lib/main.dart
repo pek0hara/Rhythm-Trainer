@@ -34,10 +34,11 @@ class RhythmPattern {
 }
 
 const List<RhythmPattern> kRhythmPresets = <RhythmPattern>[
-  RhythmPattern(id: 'quarter', name: '4分', intervals: <double>[1, 1, 1, 1], isPreset: true),
-  RhythmPattern(id: 'preset_a', name: '定番A', intervals: <double>[1, 1, 0.5, 0.5, 0.5, 0.5], isPreset: true),
-  RhythmPattern(id: 'preset_b', name: '定番B', intervals: <double>[1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], isPreset: true),
-  RhythmPattern(id: 'preset_c', name: '定番C', intervals: <double>[1, 0.5, 1, 0.5, 0.5, 0.5], isPreset: true),
+  RhythmPattern(id: 'quarter',     name: '4分音符', intervals: <double>[1, 1, 1, 1],                                         isPreset: true),
+  RhythmPattern(id: 'eighth',      name: '8分音符', intervals: <double>[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],           isPreset: true),
+  RhythmPattern(id: 'dotted',      name: '付点',    intervals: <double>[1.5, 0.5, 1.5, 0.5],                                isPreset: true),
+  RhythmPattern(id: 'offbeat',     name: '裏打ち',  intervals: <double>[0.5, 1, 1, 1, 0.5],                                 isPreset: true),
+  RhythmPattern(id: 'syncopation', name: 'シンコペ', intervals: <double>[0.5, 1, 0.5, 1, 0.5, 0.5],                        isPreset: true),
 ];
 
 class Bookmark {
@@ -306,15 +307,12 @@ class _MetronomePageState extends State<MetronomePage>
       if (mounted) setState(() => _isReady = true);
       return;
     }
-    final Uint8List wav = _buildToneWav(
-      frequencyHz: 1000,
-      durationMs: 40,
-      volume: 0.5,
-    );
-    await _methodChannel.invokeMethod<void>(
-      'prepare',
-      Uint8List.fromList(wav),
-    );
+    final Uint8List clickWav = _buildToneWav(frequencyHz: 1000, durationMs: 40, volume: 0.5);
+    final Uint8List accentWav = _buildToneWav(frequencyHz: 1500, durationMs: 40, volume: 0.7);
+    await Future.wait(<Future<void>>[
+      _methodChannel.invokeMethod<void>('prepare', Uint8List.fromList(clickWav)),
+      _methodChannel.invokeMethod<void>('prepareAccent', Uint8List.fromList(accentWav)),
+    ]);
     if (mounted) setState(() => _isReady = true);
   }
 
@@ -961,6 +959,17 @@ class _MetronomePageState extends State<MetronomePage>
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: <Widget>[
+                    IconButton(
+                      icon: const Icon(Icons.remove),
+                      tooltip: 'BPM -1',
+                      onPressed: _isPlaying || _bpm <= 40 ? null : () {
+                        setState(() {
+                          _bpm = _bpm - 1;
+                          _bpmTextController.text = _bpm.toString();
+                        });
+                        unawaited(_saveSettings());
+                      },
+                    ),
                     SizedBox(
                       width: 100,
                       child: TextField(
@@ -981,7 +990,18 @@ class _MetronomePageState extends State<MetronomePage>
                         },
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.add),
+                      tooltip: 'BPM +1',
+                      onPressed: _isPlaying || _bpm >= 240 ? null : () {
+                        setState(() {
+                          _bpm = _bpm + 1;
+                          _bpmTextController.text = _bpm.toString();
+                        });
+                        unawaited(_saveSettings());
+                      },
+                    ),
+                    const SizedBox(width: 4),
                     Text('BPM',
                         style: Theme.of(context).textTheme.headlineMedium),
                     const SizedBox(width: 4),
@@ -1317,18 +1337,36 @@ class _PatternCard extends StatelessWidget {
           ),
         ),
         child: Row(
-          children: pattern.intervals.map((double interval) {
-            return Expanded(
-              flex: (interval * 100).round(),
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 1.5),
-                decoration: BoxDecoration(
-                  color: isSelected ? cs.primary : cs.onSurfaceVariant,
-                  borderRadius: BorderRadius.circular(3),
+          children: <Widget>[
+            SizedBox(
+              width: 68,
+              child: Text(
+                pattern.name,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: isSelected ? cs.primary : cs.onSurface,
                 ),
               ),
-            );
-          }).toList(),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Row(
+                children: pattern.intervals.map((double interval) {
+                  return Expanded(
+                    flex: (interval * 100).round(),
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 1.5),
+                      decoration: BoxDecoration(
+                        color: isSelected ? cs.primary : cs.onSurfaceVariant,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
         ),
       ),
     );

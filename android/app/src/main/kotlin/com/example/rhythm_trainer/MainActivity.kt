@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
 
     private val sampleRate = 44100
     private var clickTrack: AudioTrack? = null
+    private var accentTrack: AudioTrack? = null
     private var tapTrack: AudioTrack? = null
 
     private var eventSink: EventChannel.EventSink? = null
@@ -27,6 +28,8 @@ class MainActivity : FlutterActivity() {
 
     @Volatile private var isRunning = false
     @Volatile private var isMuted = false
+    @Volatile private var beatIndex = 0
+    private val beatsPerMeasure = 4
     private var metronomeThread: Thread? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -40,6 +43,17 @@ class MainActivity : FlutterActivity() {
                         if (wavBytes != null) {
                             Thread {
                                 prepareTrack(wavBytes)
+                                mainHandler.post { result.success(null) }
+                            }.start()
+                        } else {
+                            result.success(null)
+                        }
+                    }
+                    "prepareAccent" -> {
+                        val wavBytes = call.arguments as? ByteArray
+                        if (wavBytes != null) {
+                            Thread {
+                                prepareAccentTrack(wavBytes)
                                 mainHandler.post { result.success(null) }
                             }.start()
                         } else {
@@ -135,6 +149,7 @@ class MainActivity : FlutterActivity() {
     private fun startMetronome(bpm: Double) {
         stopMetronome()
         isRunning = true
+        beatIndex = 0
         val intervalNs = (60_000_000_000.0 / bpm).toLong()
 
         metronomeThread = Thread {
@@ -209,18 +224,59 @@ class MainActivity : FlutterActivity() {
         track.play()
     }
 
+    private fun prepareAccentTrack(wav: ByteArray) {
+        val dataOffset = 44
+        val remaining = wav.size - dataOffset
+        val samples = ShortArray(remaining / 2)
+        ByteBuffer.wrap(wav, dataOffset, remaining)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .asShortBuffer()
+            .get(samples)
+
+        val minBuf = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(maxOf(minBuf, samples.size * 2))
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+
+        track.write(samples, 0, samples.size)
+        accentTrack?.release()
+        accentTrack = track
+    }
+
     private fun playClick() {
         if (isMuted) return
-        val track = clickTrack ?: return
+        val isAccent = beatIndex == 0
+        val track = (if (isAccent) accentTrack else null) ?: clickTrack ?: return
         track.stop()
         track.reloadStaticData()
         track.play()
+        beatIndex = (beatIndex + 1) % beatsPerMeasure
     }
 
     override fun onDestroy() {
         stopMetronome()
         clickTrack?.release()
         clickTrack = null
+        accentTrack?.release()
+        accentTrack = null
         tapTrack?.release()
         tapTrack = null
         super.onDestroy()
